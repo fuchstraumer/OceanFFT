@@ -1,0 +1,128 @@
+#include "/Engine/Private/Common.ush"
+#include "OceanFFTCommon.ush"
+
+/*
+    https://github.com/gasgiant/Ocean-URP
+    ^ Implementation of GPU FFT I really like, and for which I admire a few key points:
+    - Recomputes twiddle factors on the fly, rather than storing them in a texture. This is a performance win because it avoids texture reads and allows for more efficient use of registers.
+    - Unrolls the loop so we do everything in a single dispatch
+    - parametrizes things like inverting, permute, scaling, etc on uniforms
+
+    However, it uses DIF - meaning that we have to change some logic to use DIT, and we use that because it means we increase our stride
+    size used during the butterfly operations incrementally (as powers of 2).... so we can use subgroup ops for many of the early stages
+    Fewer barriers, more trying to saturate the GPU with work
+*/
+
+#define FFT_USE_WAVE_OPS 0
+#define FFT_SIZE_MIN 256
+#define FFT_SIZE_REGULAR 512
+#define FFT_SIZE_LARGE 1024
+
+#ifndef FFT_SIZE
+#define FFT_SIZE FFT_SIZE_REGULAR
+#endif
+
+#if FFT_SIZE == FFT_SIZE_MIN
+#    define FFT_LOG2_SIZE 8
+#elif FFT_SIZE == FFT_SIZE_REGULAR
+    #define FFT_LOG2_SIZE 9
+#elif FFT_SIZE == FFT_SIZE_LARGE
+    #define FFT_LOG2_SIZE 10
+#endif
+
+#if COMPILER_SUPPORTS_WAVE_SIZE
+	WAVESIZE(32)
+    #define FFT_USE_WAVE_OPS 1
+#endif
+
+#if FFT_USE_WAVE_OPS
+    // WaveSize is only ever guaranteed to be 32, and the UE shader compiler makes sure to set this
+    // by default for all platforms as far as I can tell (at least for desktop and console)
+    #define FFT_LOG2_WAVE_SIZE 4
+#else
+    // We use this as our start index for the groupshared fft implementation,
+    // so this way the waveops version just means some extra code before the baseline version
+    // and a later starting idnex for the groupshared fft implementation, which is a nice way to avoid code duplication
+    #define FFT_LOG2_WAVE_SIZE 0
+#endif
+
+groupshared float4 s_SharedDataA[FFT_SIZE];
+groupshared float4 s_SharedDataB[FFT_SIZE];
+
+static const float FFT_PI = 3.1415927f;
+static const float FFT_2_PI = 6.2831853f;
+
+bool Direction;
+bool Inverse;
+
+void ButterflyValues(uint stage, uint outputIndex, out uint2 inputIndices, out float2 phaseRotation, uniform bool Inverse)
+{
+    uint halfSpan  = FFT_SIZE >> (stage + 1);                  // distance between the two inputs being combined
+    uint groupBase = halfSpan * (outputIndex / halfSpan);      // outputIndex with its low bits cleared
+    uint lowerInput = (groupBase + outputIndex) % FFT_SIZE;
+    const float theta = -FFT_2_PI / FFT_SIZE * halfSpan;
+    phaseRotation = ComplexExp(theta);
+    inputIndices = uint2(lowerInput, lowerInput + halfSpan);
+}
+
+float4 DoFFT(in const uint threadIdx, in const float4 input)
+{
+    // Load the input into shared memory
+    s_SharedDataA[threadIdx] = input;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    bool PingPong = false;
+
+    // FFT_LOG2_WAVE_SIZE is zero if wave ops disabled, means less code divergence for the two paths
+    [unroll(FFT_LOG2_SIZE - FFT_LOG2_WAVE_SIZE - 1)]
+    for (uint step = 0; step < FFT_LOG2_SIZE - FFT_LOG2_WAVE_SIZE; ++step)
+    {
+        uint2 indices;
+        float2 twiddleFactors;
+        ButterflyValues(step, threadIdx, indices, twiddleFactors);
+
+        // read the two values from shared memory (ping pong starts as false, so we read from A first)
+        float4 a = PingPong ? s_SharedDataB[indices.x] : s_SharedDataA[indices.x];
+        float4 b = PingPong ? s_SharedDataB[indices.y] : s_SharedDataA[indices.y];
+
+        // apply the twiddle factors to the second value
+        float4 bTwiddled;
+        bTwiddled.xy = ComplexMul(twiddleFactors, b.xy);
+        bTwiddled.zw = ComplexMul(twiddleFactors, b.zw);
+
+        // write the results back to shared memory
+        const float4 resultValue = ComplexAdd(a, bTwiddled);
+
+        if (PingPong)
+        {
+            s_SharedDataA[threadIdx] = resultValue;
+        }
+        else
+        {
+            s_SharedDataB[threadIdx] = resultValue;
+        }
+
+        PingPong = !PingPong;
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    return s_SharedData[threadIdx];
+}
+
+[numthreads(FFT_SIZE, 1, 1)]
+void FFTComputeCS(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    uint threadIdx = groupThreadID.x;
+
+    // Load the input data from the input buffer
+    float4 input = InputBuffer[dispatchThreadID.x];
+
+    // Perform the FFT computation
+    float4 output = DoFFT(threadIdx, input);
+
+    // Write the output data to the output buffer
+    OutputBuffer[dispatchThreadID.x] = output;
+}
