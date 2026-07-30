@@ -6,9 +6,12 @@ __include OceanFftCommon;
 internal groupshared half4 s_DataA[FFT_SIZE];
 internal groupshared half4 s_DataB[FFT_SIZE];
 
-uniform RWStructuredBuffer<half4> Radix4_IFFT_Input;
-uniform bool Radix4_IFFT_Transpose;
-uniform bool Radix4_IFFT_BonusWaveOpsRound;
+[[vk::binding(0, 0)]] RWStructuredBuffer<half4> Radix4_IFFT_Input;
+[[vk::binding(0, 1)]] Texture1D<half2> Radix4_IFFT_PhaseRotationLUT;
+[[vk::binding(0, 2)]] bool Radix4_IFFT_Transpose;
+[[vk::binding(0, 3)]] bool Radix4_IFFT_BonusWaveOpsRound;
+[[vk::binding(0, 4)]] uint Radix4_IFFT_WaveSize;
+[[vk::binding(0, 5)]] uint Radix4_IFFT_Log4WaveSize;
 
 // Base-4 digit-reversal of the low FFT_LOG2_SIZE bits of idx.
 internal uint DigitReverse4(uint idx)
@@ -125,13 +128,13 @@ half4 DoIFFT_Radix4(in const uint threadIdx, in const half4 input)
     bool pingPong = false;
     uint startStage = 0;
 
-    if (FFT_USE_WAVE_OPS)
+#if defined(FFT_USE_WAVE_OPS)
     {
         half4 threadData = s_DataA[threadIdx];
         uint bitOffset = 0;
         // 2 radix-4 stages: bits 0-3, i.e. 16 lanes
-        [unroll(FFT_LOG4_WAVE_SIZE)]
-        for (; bitOffset + 2 < FFT_LOG2_WAVE_SIZE; bitOffset += 2)
+        [unroll(Radix4_IFFT_Log4WaveSize)]
+        for (; bitOffset + 2 < firstbithigh(Radix4_IFFT_WaveSize); bitOffset += 2)
         {
             const uint logStep = 1u << bitOffset;
             half2 tw1, tw2, tw3;
@@ -179,8 +182,9 @@ half4 DoIFFT_Radix4(in const uint threadIdx, in const half4 input)
         s_DataA[threadIdx] = half4(threadData);
         GroupMemoryBarrierWithGroupSync();
         // 2 stages per radix-4 stage + 1 stage for radix-2 tail
-        startStage = FFT_LOG4_WAVE_SIZE * 2u + (Radix4_IFFT_BonusWaveOpsRound ? 1u : 0u);
+        startStage = Radix4_IFFT_Log4WaveSize * 2u + (Radix4_IFFT_BonusWaveOpsRound ? 1u : 0u);
     }
+#endif
 
     // Remaining radix-4 stages via LDS, ping-ponging exactly like the radix-2 path
     uint bitOffset = startStage;

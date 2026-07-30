@@ -13,7 +13,7 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
     uint startStage = 0;
     bool pingPong = false;
 
-    if (FFT_USE_WAVE_OPS && FFT_LOG2_WAVE_SIZE > 0)
+#if defined(FFT_USE_WAVE_OPS)
     {
         half4 threadData = s_SharedDataA[threadIdx];
 
@@ -28,6 +28,7 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
         GroupMemoryBarrierWithGroupSync();
         startStage = FFT_LOG2_WAVE_SIZE;
     }
+#endif
 
     for (uint stage = startStage; stage < FFT_LOG2_SIZE; ++stage)
     {
@@ -66,8 +67,9 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
     return pingPong ? s_SharedDataB[threadIdx] : s_SharedDataA[threadIdx];
 }
 
-uniform RWStructuredBuffer<half4> Radix2_IFFT_Input;
-uniform bool Radix2_IFFT_Transpose;
+[[vk::binding(0, 0)]] RWStructuredBuffer<half4> Radix2_IFFT_Input;
+[[vk::binding(0, 1)]] Texture1D<half2> Radix2_IFFT_PhaseRotationLUT;
+[[vk::binding(0, 2)]] bool Radix2_IFFT_Transpose;
 
 [numthreads(FFT_SIZE, 1, 1)]
 void Radix2_IFFT(

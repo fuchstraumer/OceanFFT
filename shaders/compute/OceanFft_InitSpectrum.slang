@@ -1,5 +1,13 @@
 implementing OceanFft;
 __include OceanFftCommon;
+__include OceanFftSpectra;
+
+[[vk::binding(0, 0)]] uniform CascadeParameters CascadeParams;
+[[vk::binding(0, 1)]] uniform SpectrumParameters SpectrumParams;
+[[vk::binding(0, 2)]] uniform RWStructuredBuffer<half4> WaveData;
+[[vk::binding(0, 3)]] uniform RWStructuredBuffer<half2> h0K; // h0
+[[vk::binding(0, 4)]] uniform SamplerState normSampler;
+[[vk::binding(0, 5)]] uniform Texture2D normTexture;
 
 internal uint4 Rand4DPCG32(in int4 p)
 {
@@ -47,7 +55,8 @@ internal float2 GetGaussianRandomFloat2(in int2 coordinates, in int cascade, in 
     float u2 = random.y;
     float radius = sqrt(-2.0f * log(u1));
     float theta = OceanFft_2PI * u2;
-    return float2(radius * cos(theta), radius * sin(theta));
+    float2 scTheta; sincos(theta, scTheta.y, scTheta.x);
+    return radius * scTheta;
 }
 
 internal float CascadeContribution(in float k, in uint cascade, in uniform CascadeParameters cascadeParams)
@@ -117,13 +126,7 @@ internal float ShortWavesFade(in float kLength, in float fadeLength)
 [shader("compute")]
 [numthreads(8, 8, FFT_NUM_WAVE_CASCADES)]
 void SpectrumInitCS(uint3 dispatchThreadID: SV_DispatchThreadID,
-                    uint3 groupThreadID: SV_GroupThreadID,
-                    uniform CascadeParameters cascadeParams,
-                    uniform SpectrumParameters spectrumParams,
-                    uniform RWStructuredBuffer<half4> WaveData,
-                    uniform RWStructuredBuffer<half2> h0K, // h0
-                    uniform SamplerState normSampler,
-                    uniform Texture2D normTexture)
+                    uint3 groupThreadID: SV_GroupThreadID)
 {
     // even though we partition this into workgroups, it's still important to consider coords as global
     int2 coordinates = int2(dispatchThreadID.x - FFT_SIZE / 2, dispatchThreadID.y - FFT_SIZE / 2);
