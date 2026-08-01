@@ -15,7 +15,12 @@ internal const static uint FFT_LOG2_SIZE = firstbithigh(FFT_SIZE);
 internal const static uint FFT_LOG4_SIZE = FFT_LOG2_SIZE / 2u;
 // get remainder so we know how many radix-2 stages we need after radix-4 stages
 internal const static uint FFT_LOG4_REMAINDER = FFT_LOG2_SIZE % 2u;
+// Pass -DOCEAN_FFT_DISABLE_WAVE_OPS to slangc to compile the fallback WGSL variant
+#ifdef OCEAN_FFT_DISABLE_WAVE_OPS
+internal const static bool FFT_USE_WAVE_OPS = false;
+#else
 internal const static bool FFT_USE_WAVE_OPS = true;
+#endif
 internal const static uint FFT_WAVE_SIZE = 32u;
 // FFT_LOG2_WAVE_SIZE: 5, FFT_LOG4_WAVE_SIZE: 2
 internal const static uint FFT_LOG2_WAVE_SIZE = FFT_USE_WAVE_OPS ? firstbithigh(FFT_WAVE_SIZE) : 0u;
