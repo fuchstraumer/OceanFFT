@@ -14,7 +14,13 @@ struct GLFWwindow;
 
 namespace velox
 {
-    
+    enum class ResizeStatus : uint8_t
+    {
+        Unchanged = 0,
+        Resized = 1,
+        Minimized = 2
+    };
+
     struct ContextCreateInfo
     {
         uint32_t InitialWidth{ 800u };
@@ -60,7 +66,7 @@ namespace velox
     #endif
         ~Context();
 
-        void Resize(uint32_t width, uint32_t height);
+        ResizeStatus Resize(uint32_t width, uint32_t height);
         wgpu::TextureView AcquireNextFrame();
         void Present();
 

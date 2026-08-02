@@ -3,6 +3,7 @@
 #include <iostream>
 #include <print>
 #ifndef __EMSCRIPTEN__
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <webgpu/webgpu_glfw.h>
 #endif
@@ -29,16 +30,23 @@ namespace
     };
 
     // todo: we should sink these somewhere more portable, and which could actually give us debug info in live clients maybe?
-    void LogUncapturedError(const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message)
+    [[noreturn]] void LogUncapturedError(
+        [[maybe_unused]] const wgpu::Device&,
+        wgpu::ErrorType type,
+        wgpu::StringView message)
     {
         const auto iter = ErrorTypeStrings.find(type);
         const std::string_view typeStr = (iter != ErrorTypeStrings.end()) ? iter->second : "Unknown";
         std::println(stderr,
-                     "[wgpu] Uncaptured error | Type \"{}\" | Message: {}",
+                     "[wgpu] Uncaptured error, exiting | Error Type \"{}\" | Message: {}",
                      typeStr, std::string_view(message.data, message.length));
+        std::exit(1);
     }
 
-    void LogDeviceLost(const wgpu::Device&, wgpu::DeviceLostReason reason, wgpu::StringView message)
+    void LogDeviceLost(
+        [[maybe_unused]] const wgpu::Device&,
+        wgpu::DeviceLostReason reason,
+        wgpu::StringView message)
     {
         // note that this is also called for routine destruction, so messages from here don't always mean something went wrong
         const auto it = DeviceLostReasonStrings.find(reason);
@@ -137,6 +145,7 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
 {
     wgpu::DeviceDescriptor deviceDesc{};
     deviceDesc.label = createInfo.ApplicationName;
+    // todo: consider how to auto-add things like timestamp query features for benchmarking
     deviceDesc.requiredFeatureCount = createInfo.RequiredFeatures.size();
     deviceDesc.requiredFeatures = createInfo.RequiredFeatures.data();
     deviceDesc.SetUncapturedErrorCallback(LogUncapturedError);
@@ -205,17 +214,30 @@ std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreat
 #else
 std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCreateInfo& createInfo)
 {
+    // todo: We have a bunch of nice example code for how to set backbuffer bit depth and color stuff in DiamondDogs,
+    // along with configuring other parameters for the window. We should do some of that here, especially color depth
+    // (because it's interesting and can be fun to play with!)
+   
     if (!glfwInit())
     {
         return std::unexpected(RhiError::GLFWInitFailed);
     }
 
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // don't create an OpenGL context
+    // set of basic flags to make this a bit easier to work with on desktop
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    // works like Vulkan - no context, just platform window
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
     GLFWwindow* window = glfwCreateWindow(createInfo.InitialWidth, createInfo.InitialHeight, createInfo.ApplicationName.data(), nullptr, nullptr);
     if (!window)
     {
         return std::unexpected(RhiError::GLFWWindowCreationFailed);
     }
+
+    // incase we need this for callbacks later
+    glfwSetWindowUserPointer(window, this);
 
     return window;
 }
@@ -262,16 +284,23 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
 
 }
 
-void Context::Resize(uint32_t width, uint32_t height)
+ResizeStatus Context::Resize(uint32_t width, uint32_t height)
 {
-    if (width == 0u || height == 0u)
+    if (width == surfaceConfig.width && height == surfaceConfig.height)
     {
-        return; // minimized / zero-size - skip until it's real again
+        return ResizeStatus::Unchanged;
     }
-    // just update dims, and then reconfigure
-    surfaceConfig.width = width;
-    surfaceConfig.height = height;
-    surface.Configure(&surfaceConfig);
+    else if (width == 0 || height == 0)
+    {
+        return ResizeStatus::Minimized;
+    }
+    else
+    {
+        surfaceConfig.width = width;
+        surfaceConfig.height = height;
+        surface.Configure(&surfaceConfig);
+        return ResizeStatus::Resized;
+    }
 }
 
 wgpu::TextureView Context::AcquireNextFrame()
