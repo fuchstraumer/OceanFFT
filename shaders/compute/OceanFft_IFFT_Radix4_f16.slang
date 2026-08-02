@@ -209,7 +209,7 @@ half4 DoIFFT_Radix4(in const uint threadIdx, in const half4 input)
         Radix4Combine(a0, a1, a2, a3, y0, y1, y2, y3);
 
         const uint myDigit = (threadIdx >> bitOffset) & 3u;
-        half4 result;
+        half4 result = half4(0.0h);
         switch (myDigit)
         {
             case 0:

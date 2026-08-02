@@ -5,6 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Launch Shader Compiler (C++)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/shaders/RelWithDebInfo/OceanShaderCompiler.exe",
+            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
