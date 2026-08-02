@@ -572,7 +572,7 @@ if __name__ == "__main__":
     write_cpp_lut(header_dir, source_dir, "DonelanBannerNormLUT", lut_data.flatten().view(np.uint32))
 
     sincos_data = generate_sincos_lut(config_args["complex_exp_sincos"])
-    write_cpp_lut(header_dir, source_dir, "SincosLUT", sincos_data)
+    write_cpp_lut(header_dir, source_dir, "SinCosLUT", sincos_data)
 
     mitsuyasu_str = get_polynomial_fit_function_str(S_MitsuyasuBounds, "Mitsuyasu", config_args["mitsuyasu_polynomial_degree"])
     hasselman_str = get_polynomial_fit_function_str(S_HasselmanBounds, "Hasselman", config_args["hasselmann_polynomial_degree"])

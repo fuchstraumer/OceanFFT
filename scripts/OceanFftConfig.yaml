@@ -88,6 +88,6 @@ script_output_paths:
   - name: cpp_header_path
     path: "include/generated"
   - name: cpp_source_path
-    path: "src"
+    path: "src/generated"
   - name: shaders_path
     path: "shaders/compute"
