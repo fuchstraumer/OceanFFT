@@ -1,6 +1,9 @@
 implementing OceanFft;
 __include OceanFftCommon;
 
+[[vk::binding(FFT_RADIX2_BIND_LOC, 0)]] uniform RWStructuredBuffer<half4> Radix2_IFFT_Input;
+[[vk::binding(FFT_RADIX2_BIND_LOC, 1)]] ConstantBuffer<IfftParameters> Radix2_Parameters;
+
 internal groupshared half4 s_SharedDataA[FFT_SIZE];
 internal groupshared half4 s_SharedDataB[FFT_SIZE];
 
@@ -17,7 +20,7 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
     {
         half4 threadData = s_SharedDataA[threadIdx];
 
-        [unroll(FFT_LOG2_WAVE_SIZE)]
+        [unroll]
         for (uint stage = 0; stage < FFT_LOG2_WAVE_SIZE; ++stage)
         {
             threadData = IFFT_WaveOpsRadix2Step(threadData, threadIdx, stage);
@@ -30,6 +33,7 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
     }
 #endif
 
+    [unroll]
     for (uint stage = startStage; stage < FFT_LOG2_SIZE; ++stage)
     {
         const uint logStep = 1u << stage;
@@ -67,10 +71,6 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
     return pingPong ? s_SharedDataB[threadIdx] : s_SharedDataA[threadIdx];
 }
 
-[[vk::binding(0, 0)]] RWStructuredBuffer<half4> Radix2_IFFT_Input;
-[[vk::binding(0, 1)]] Texture1D<half2> Radix2_IFFT_PhaseRotationLUT;
-[[vk::binding(0, 2)]] bool Radix2_IFFT_Transpose;
-
 [numthreads(FFT_SIZE, 1, 1)]
 void Radix2_IFFT(
     in uint3 dispatchThreadId : SV_DispatchThreadID,
@@ -78,7 +78,7 @@ void Radix2_IFFT(
 {
     uint threadId = dispatchThreadId.x;
     uint2 targetIndex;
-    if (Radix2_IFFT_Transpose)
+    if (Radix2_Parameters.Transpose)
     {
         targetIndex = dispatchThreadId.yx;
     }

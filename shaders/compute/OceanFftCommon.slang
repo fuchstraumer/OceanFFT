@@ -28,6 +28,10 @@ internal const static uint FFT_LOG4_WAVE_SIZE = FFT_USE_WAVE_OPS ? 2u : 0u;
 internal const static half FFT_RADIX2_SCALE_FACTOR = 0.5h;
 internal const static half FFT_RADIX4_SCALE_FACTOR = 0.25h;
 
+internal const static uint FFT_COMMON_BIND_LOC = 0;
+internal const static uint FFT_RADIX2_BIND_LOC = 1;
+internal const static uint FFT_RADIX4_BIND_LOC = 2;
+
 public struct SpectrumParameters
 {
     uint NoiseSeed;
@@ -51,6 +55,14 @@ public struct CascadeParameters
     uint2 Dimensions;
     float2 Pad0;
 };
+
+public struct IfftParameters
+{
+    bool Transpose;
+    uint WaveSize;
+    uint Log4WaveSize;
+    uint Pad0;
+}
 
 internal int LinearizeThreadIndex(uint3 threadIdx, in uniform uint2 dimensions)
 {
@@ -89,6 +101,21 @@ internal half2 ComplexExp(in half x)
     half2 result;
     sincos(x, result.y, result.x);
     return result;
+}
+
+// LUT has to be 2D because WGSL does not like 1D textures. 
+[[vk::binding(FFT_COMMON_BIND_LOC, 0)]] uniform Texture1D<half2> FFT_SinCos_LUT;
+[[vk::binding(FFT_COMMON_BIND_LOC, 1)]] uniform SamplerState FFT_LUT_Sampler;
+// LUT-based complex exponential, allowing us to stay entirely in half precision pipe for IDFT math
+// RGA shows F32 ops showing up only around this function, so this should help knock those into f16
+internal half2 ComplexExp(in const uint log2GroupSize, in const uint j, in const uint tapIndex)
+{
+    const float fftSizeInv = 1.0f / float(FFT_SIZE);
+    const uint mask = (1u << log2GroupSize) - 1u;
+    const uint p = (j * tapIndex & mask) << (FFT_LOG2_SIZE - log2GroupSize);
+    const float uCoord = (float(p) + 0.5f) * fftSizeInv;
+    // texture has y coord pre-conjugated, so one less mul as well
+    return FFT_SinCos_LUT.SampleLevel(FFT_LUT_Sampler, uCoord, 0.0f);
 }
 
 internal float2 ComplexMul(in float2 a, in float2 b)

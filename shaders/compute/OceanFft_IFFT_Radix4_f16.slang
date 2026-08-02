@@ -6,12 +6,9 @@ __include OceanFftCommon;
 internal groupshared half4 s_DataA[FFT_SIZE];
 internal groupshared half4 s_DataB[FFT_SIZE];
 
-[[vk::binding(0, 0)]] RWStructuredBuffer<half4> Radix4_IFFT_Input;
-[[vk::binding(0, 1)]] Texture1D<half2> Radix4_IFFT_PhaseRotationLUT;
-[[vk::binding(0, 2)]] bool Radix4_IFFT_Transpose;
-[[vk::binding(0, 3)]] bool Radix4_IFFT_BonusWaveOpsRound;
-[[vk::binding(0, 4)]] uint Radix4_IFFT_WaveSize;
-[[vk::binding(0, 5)]] uint Radix4_IFFT_Log4WaveSize;
+[[vk::binding(FFT_RADIX4_BIND_LOC, 0)]] uniform RWStructuredBuffer<half4> Radix4_IFFT_Input;
+// we should really put these in a struct
+[[vk::binding(FFT_RADIX4_BIND_LOC, 1)]] ConstantBuffer<IfftParameters> Radix4_Parameters; 
 
 // Base-4 digit-reversal of the low FFT_LOG2_SIZE bits of idx.
 internal uint DigitReverse4(uint idx)
@@ -133,7 +130,7 @@ half4 DoIFFT_Radix4(in const uint threadIdx, in const half4 input)
         half4 threadData = s_DataA[threadIdx];
         uint bitOffset = 0;
         // 2 radix-4 stages: bits 0-3, i.e. 16 lanes
-        [unroll(Radix4_IFFT_Log4WaveSize)]
+        [unroll(Radix4_Parameters.Log4WaveSize)]
         for (; bitOffset + 2 < firstbithigh(Radix4_IFFT_WaveSize); bitOffset += 2)
         {
             const uint logStep = 1u << bitOffset;
@@ -169,20 +166,10 @@ half4 DoIFFT_Radix4(in const uint threadIdx, in const half4 input)
             threadData *= FFT_RADIX4_SCALE_FACTOR;
         }
 
-        // don't run the bonus wave ops round if param not set, because this changes
-        // our derivation of the bit reversal function (since that depends on stage ordering)
-        if (Radix4_IFFT_BonusWaveOpsRound && bitOffset < FFT_LOG2_WAVE_SIZE)
-        {
-            threadData = IFFT_WaveOpsRadix2Step(
-                threadData,
-                threadIdx,
-                bitOffset);
-        }
-
         s_DataA[threadIdx] = half4(threadData);
         GroupMemoryBarrierWithGroupSync();
         // 2 stages per radix-4 stage + 1 stage for radix-2 tail
-        startStage = Radix4_IFFT_Log4WaveSize * 2u + (Radix4_IFFT_BonusWaveOpsRound ? 1u : 0u);
+        startStage = Radix4_IFFT_Log4WaveSize * 2u;
     }
 #endif
 
@@ -288,7 +275,7 @@ void Radix4_IFFT(
 {
     uint threadIdx = dispatchThreadID.x;
     uint2 targetIndex;
-    if (Radix4_IFFT_Transpose)
+    if (Radix4_Parameters.Transpose)
     {
         targetIndex = dispatchThreadID.yx;
     }

@@ -1,5 +1,3 @@
-
-
 /**
  * OceanShaderCompiler
  * Loads Slang modules, enumerates defined entrypoints, compiles each to WGSL,
@@ -12,6 +10,8 @@
  * --wave-variants: compile every entrypoint twice — once normally (_WaveOps)
  *                  and once with OCEAN_FFT_DISABLE_WAVE_OPS=1 (_NoWaveOps) —
  *                  and emit a Get<Name>Wgsl(bool waveOps) selector for each pair.
+ * --O<n>: optimization level, 0-3, s, or z. If unspecified, defaults to 0 (no optimizations).
+ *         this is probably the one to use, since we just feed this into Tint at runtime
  */
 
 #include <slang-com-helper.h>
@@ -50,33 +50,38 @@ static std::vector<slang::CompilerOptionEntry> s_CompileOptions;
 
 void AddDefaultCompileOptions()
 {
-    slang::CompilerOptionEntry optDisableSpecialization{};
-    optDisableSpecialization.name = slang::CompilerOptionName::DisableSpecialization;
-    optDisableSpecialization.value.intValue0 = static_cast<int32_t>(true);
-    s_CompileOptions.push_back(optDisableSpecialization);
-    slang::CompilerOptionEntry optDisableDynamicDispatch{};
-    optDisableDynamicDispatch.name = slang::CompilerOptionName::DisableDynamicDispatch;
-    optDisableDynamicDispatch.value.intValue0 = static_cast<int32_t>(true);
-    s_CompileOptions.push_back(optDisableDynamicDispatch);
     // catch all warnings as errors, since wgsl is a picky and strict target!
-    slang::CompilerOptionEntry optAllWarningAsErrors{};
-    optAllWarningAsErrors.name = slang::CompilerOptionName::WarningsAsErrors;
-    s_CompileOptions.push_back(optAllWarningAsErrors);
-    slang::CompilerOptionEntry optFloatingPointMode{};
-    // we want to use fast math, we were pretty intentional about our math and used FMA/mad where we could for precision
-    optFloatingPointMode.name = slang::CompilerOptionName::FloatingPointMode;
-    optFloatingPointMode.value.intValue0 = static_cast<int32_t>(SlangFloatingPointMode::SLANG_FLOATING_POINT_MODE_FAST);
-    s_CompileOptions.push_back(optFloatingPointMode);
+    slang::CompilerOptionEntry optAllWarningsAsErrors{};
     // slang seems to take this as a view, and it's intended to be used inline when compiling, 
     // so we can just use a static string literal here and it should be fine
     constexpr const char* k_allWarningsAsErrors = "all";
-    optAllWarningAsErrors.value.stringValue0 = k_allWarningsAsErrors;
+    optAllWarningsAsErrors.value.kind = slang::CompilerOptionValueKind::String;
+    optAllWarningsAsErrors.value.stringValue0 = k_allWarningsAsErrors;
+    optAllWarningsAsErrors.name = slang::CompilerOptionName::WarningsAsErrors;
+    // Disabled for now! some of it's suggested changes broke compile.
+    //s_CompileOptions.push_back(optAllWarningsAsErrors);
+    // we want to use fast math, we were pretty intentional about our math and used FMA/mad where we could for precision
+    slang::CompilerOptionEntry optFloatingPointMode{};
+    optFloatingPointMode.value.kind = slang::CompilerOptionValueKind::Int;
+    optFloatingPointMode.name = slang::CompilerOptionName::FloatingPointMode;
+    optFloatingPointMode.value.intValue0 = static_cast<int32_t>(SlangFloatingPointMode::SLANG_FLOATING_POINT_MODE_PRECISE);
+    s_CompileOptions.push_back(optFloatingPointMode);
     // try to disable name mangling, since we want to be able to read our compiled-in shaders
     // and they'll be passing through Tint at runtime anyways (correctness beats perf, for web)
     slang::CompilerOptionEntry optDisableNameMangling{}; // note this is experimental
+    optDisableNameMangling.value.kind = slang::CompilerOptionValueKind::Int;
     optDisableNameMangling.name = slang::CompilerOptionName::NoMangle;
     optDisableNameMangling.value.intValue0 = static_cast<int32_t>(true);
-    s_CompileOptions.push_back(optAllWarningAsErrors);
+    //s_CompileOptions.push_back(optDisableNameMangling);
+    slang::CompilerOptionEntry optDebugInfoLevel{};
+    optDebugInfoLevel.name = slang::CompilerOptionName::DebugInfoIncludeSource;
+    optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
+    optDebugInfoLevel.value.intValue0 = static_cast<int32_t>(true);
+    s_CompileOptions.push_back(optDebugInfoLevel);
+    optDebugInfoLevel.name = slang::CompilerOptionName::DebugInformation;
+    optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
+    optDebugInfoLevel.value.intValue0 = SlangDebugInfoLevel::SLANG_DEBUG_INFO_LEVEL_MAXIMAL;
+    s_CompileOptions.push_back(optDebugInfoLevel);
 }
 
 static std::string blobStr(slang::IBlob* b)
@@ -105,6 +110,7 @@ static Slang::ComPtr<slang::ISession> makeSession(
 
     slang::TargetDesc td{};
     td.format = SLANG_WGSL;
+    td.profile = global->findProfile("sm_6_10");
 
     slang::SessionDesc sd{};
     sd.targets          = &td;
@@ -113,8 +119,16 @@ static Slang::ComPtr<slang::ISession> makeSession(
     sd.preprocessorMacroCount  = static_cast<SlangInt>(mds.size());
     sd.searchPaths      = paths.data();
     sd.searchPathCount  = static_cast<SlangInt>(paths.size());
-    sd.compilerOptionEntries = s_CompileOptions.data();
-    sd.compilerOptionEntryCount = static_cast<SlangInt>(s_CompileOptions.size());
+    if (!s_CompileOptions.empty())
+    {
+        sd.compilerOptionEntries = s_CompileOptions.data();
+        sd.compilerOptionEntryCount = static_cast<SlangInt>(s_CompileOptions.size());
+    }
+    else
+    {
+        sd.compilerOptionEntries = nullptr;
+        sd.compilerOptionEntryCount = 0;
+    }
 
     Slang::ComPtr<slang::ISession> session;
     if (SLANG_FAILED(global->createSession(sd, session.writeRef())))
@@ -123,6 +137,7 @@ static Slang::ComPtr<slang::ISession> makeSession(
     }
     return session;
 }
+
 
 static std::optional<std::string> compileEP(
     slang::ISession* session,
@@ -166,7 +181,7 @@ static std::vector<CompiledEP> compileModule(
     Slang::ComPtr<slang::ISession> session = makeSession(global, macros, searchPaths);
     if (!session)
     {
-        std::cerr << "session init failed for " << stem << "\n";
+        std::println(stderr, "[shader_compiler] session init failed for {}\n", stem);
         return {};
     }
 
@@ -193,7 +208,7 @@ static std::vector<CompiledEP> compileModule(
         }
 
         const char* name = ep->getFunctionReflection()->getName();
-        std::println(stderr, "  {} {}{}", stem, name, suffix);
+        std::println(stderr, "[shader_compiler] Compiling entry point | [Module] {} [Entry Point] {}{}", stem, name, suffix);
 
         std::optional<std::string> wgsl = compileEP(session.get(), mod, ep.get());
         if (wgsl)
@@ -210,10 +225,9 @@ static std::vector<CompiledEP> compileModule(
 
 static std::string makeIdent(std::string_view name, std::string_view suffix)
 {
-    std::string s{"k"};
+    std::string s{"k_"};
     for (char c : name)   s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
     for (char c : suffix) s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
-    s += "Wgsl";
     return s;
 }
 
@@ -238,9 +252,9 @@ static void writeHeader(const std::vector<CompiledEP>& shaders, const fs::path& 
     }
 
     f << "#pragma once\n"
-         "// Auto-generated by OceanShaderCompiler -- do not edit manually.\n"
+         "// Auto-generated by shaders/shader_compiler.cpp -- do not edit manually.\n"
          "#include <string_view>\n\n"
-         "namespace OceanFFT::Shaders {\n\n";
+         "namespace OceanFFT::Shaders\n{\n\n";
 
     constexpr std::string_view DELIM = "WGSL_END";
 
@@ -266,7 +280,7 @@ static void writeHeader(const std::vector<CompiledEP>& shaders, const fs::path& 
             continue;
         }
 
-        f << "inline std::string_view Get" << name << "Wgsl(bool waveOps) noexcept {\n"
+        f << "inline std::string_view Get" << name << "Wgsl(bool waveOps) noexcept\n{\n"
           << "    return waveOps ? " << makeIdent(name, "_WaveOps")
           << " : " << makeIdent(name, "_NoWaveOps") << ";\n"
           << "}\n\n";
@@ -369,7 +383,7 @@ int main(int argc, char** argv)
     std::vector<CompiledEP> all;
     for (auto& mod : modulePaths)
     {
-        std::println(stderr, "module: {}", mod.string());
+        std::println(stderr, "[shader_compiler] Compiling module: {}", mod.string());
         if (waveVariants)
         {
             auto wave = compileModule(global.get(), mod, defines, "_WaveOps");
