@@ -54,12 +54,20 @@ void AddDefaultCompileOptions()
     slang::CompilerOptionEntry optAllWarningsAsErrors{};
     // slang seems to take this as a view, and it's intended to be used inline when compiling, 
     // so we can just use a static string literal here and it should be fine
+    slang::CompilerOptionEntry optWarningLevel{};
+    optWarningLevel.name = slang::CompilerOptionName::WarningLevel;
+    optWarningLevel.value.kind = slang::CompilerOptionValueKind::Int;
+    optWarningLevel.value.intValue0 = SlangWarningLevel::SLANG_WARNING_LEVEL_PEDANTIC;
+    s_CompileOptions.push_back(optWarningLevel);
+    optWarningLevel.value.intValue0 = SlangWarningLevel::SLANG_WARNING_LEVEL_ALL;
+    s_CompileOptions.push_back(optWarningLevel);
+    
     constexpr const char* k_allWarningsAsErrors = "all";
     optAllWarningsAsErrors.value.kind = slang::CompilerOptionValueKind::String;
     optAllWarningsAsErrors.value.stringValue0 = k_allWarningsAsErrors;
     optAllWarningsAsErrors.name = slang::CompilerOptionName::WarningsAsErrors;
     // Disabled for now! some of it's suggested changes broke compile.
-    //s_CompileOptions.push_back(optAllWarningsAsErrors);
+    s_CompileOptions.push_back(optAllWarningsAsErrors);
     // we want to use fast math, we were pretty intentional about our math and used FMA/mad where we could for precision
     slang::CompilerOptionEntry optFloatingPointMode{};
     optFloatingPointMode.value.kind = slang::CompilerOptionValueKind::Int;
