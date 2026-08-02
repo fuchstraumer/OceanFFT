@@ -18,9 +18,9 @@ include(cmake/ConfigureSlang.cmake)
 add_subdirectory(third_party/slang)
 organize_slang_targets()
 
-SET(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation")
-SET(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build the GLFW example programs")
-SET(GLFW_BUILD_TESTS OFF CACHE BOOL "Build the GLFW test programs")
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation")
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build the GLFW example programs")
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "Build the GLFW test programs")
 set(GLFW_LIBRARY_TYPE "STATIC" CACHE STRING "Library type override for GLFW (SHARED, STATIC, OBJECT, or empty to follow BUILD_SHARED_LIBS)")
 add_subdirectory(third_party/glfw)
 set_target_properties(glfw PROPERTIES FOLDER "third_party")
@@ -59,7 +59,6 @@ set(OceanFFT_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ShaderUtils.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/DonelanBannerNormLUT.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/SinCosLUT.cpp")
-
 
 add_executable(OceanFFT ${OceanFFT_SOURCES} ${OceanFFT_Headers})
 target_include_directories(OceanFFT PRIVATE
@@ -114,6 +113,6 @@ else()
         $<$<CXX_COMPILER_ID:MSVC>:/fp:fast>
         $<$<CXX_COMPILER_ID:MSVC>:/W4>)
 
-    target_link_libraries(OceanFFT PRIVATE glfw webgpu_dawn webgpu_glfw webgpu_cpp)
+    target_link_libraries(OceanFFT PRIVATE glfw webgpu_glfw webgpu_cpp)
     # similar link options locally
 endif()

@@ -12,3 +12,5 @@ _deps
 CMakeUserPresets.json
 build/
 shaders/compute/OceanFFT_Generated.slang
+include/generated/
+src/generated/
