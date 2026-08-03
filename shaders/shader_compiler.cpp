@@ -28,6 +28,7 @@
 #include <variant>
 #include <ranges>
 #include <algorithm>
+#include <expected>
 
 namespace fs = std::filesystem;
 
@@ -40,13 +41,16 @@ struct Macro
 struct CompiledEntryPoint
 {
     std::string name;
-    std::string suffix;
+    uint32_t fftSize;
+    uint32_t waveSize;
+    bool waveOps;
     std::string code;
 };
 
 // Add compile options from command line invocations
 static std::vector<slang::CompilerOptionEntry> s_CompileOptions;
 constexpr static const char* k_allWarningsAsErrorsStr = "all";
+constexpr static const char* k_disabledWarningsStr = "31010"; // link-time constant array sizing is WIP and may break reflection
 constexpr static SlangInt k_WgslTargetIndex = 0;
 
 void AddDefaultCompileOptions()
@@ -60,6 +64,13 @@ void AddDefaultCompileOptions()
     s_CompileOptions.push_back(optWarningLevel);
     optWarningLevel.value.intValue0 = SlangWarningLevel::SLANG_WARNING_LEVEL_ALL;
     s_CompileOptions.push_back(optWarningLevel);
+    // disable some warnings: E31010 warns that link time constant array sizing is WIP and may break reflection
+    // this is fine for us, we don't use reflection and the alternative would make our life sooo much worse
+    slang::CompilerOptionEntry optDisableWarnings{};
+    optDisableWarnings.name = slang::CompilerOptionName::DisableWarnings;
+    optDisableWarnings.value.kind = slang::CompilerOptionValueKind::String;
+    optDisableWarnings.value.stringValue0 = k_disabledWarningsStr;
+    s_CompileOptions.push_back(optDisableWarnings);
     // all warnings should be errors. also slang takes the string as a view, so its a constexpr static
     // at program scope. note that a lot of these should be caught from how much we've been testing
     // with test_ifft.py, but still I want to be as sure as I can be
@@ -105,7 +116,8 @@ static Slang::ComPtr<slang::ISession> MakeSlangSession(
 
     slang::TargetDesc td{};
     td.format = SlangCompileTarget::SLANG_WGSL;
-    td.profile = global->findProfile("spirv_1_6");
+    // spirv 1.4 should be broadly compatible with most devices
+    td.profile = global->findProfile("spirv_1_4");
     const std::vector<slang::TargetDesc> targets = {td};
 
     slang::SessionDesc sd{};
@@ -130,7 +142,7 @@ static Slang::ComPtr<slang::ISession> MakeSlangSession(
     Slang::ComPtr<slang::ISession> session;
     if (SLANG_FAILED(global->createSession(sd, session.writeRef())))
     {
-        std::println(stderr, "[slang] createSession failed\n");
+        std::println(stderr, "[slang] createSession failed");
     }
     return session;
 }
@@ -152,6 +164,49 @@ std::string ExtractEntryPointBytecodeWGSL(Slang::ComPtr<slang::IComponentType> p
     return SlangBlobToStr(codeBlob.get());
 }
 
+std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> CompileModuleVariant(
+    Slang::ComPtr<slang::ISession> session,
+    std::vector<slang::IComponentType*> components,
+    SlangInt entryPointCount,
+    std::unordered_map<SlangInt, std::string> entryPointNames,
+    uint32_t fftSize,
+    uint32_t waveSize,
+    bool waveOps)
+{
+    Slang::ComPtr<slang::IBlob> diag;
+    Slang::ComPtr<slang::IComponentType> program;
+    session->createCompositeComponentType(components.data(),
+                                          static_cast<SlangInt>(components.size()),
+                                          program.writeRef(), diag.writeRef());
+    if (!program)
+    {
+        return std::unexpected(diag);
+    }
+
+    Slang::ComPtr<slang::IComponentType> linked;
+    if (SLANG_FAILED(program->link(linked.writeRef(), diag.writeRef())))
+    {
+        return std::unexpected(diag);
+    }
+
+    std::vector<CompiledEntryPoint> results(static_cast<size_t>(entryPointCount),
+                                            CompiledEntryPoint{ {}, fftSize, waveSize, waveOps, {} });
+
+    for (SlangInt i = 0; i < entryPointCount; ++i)
+    {
+        std::string wgslCode = ExtractEntryPointBytecodeWGSL(linked, i);
+        if (wgslCode.empty())
+        {
+            return std::unexpected(diag);
+        }
+
+        results[static_cast<size_t>(i)].name = entryPointNames[i];
+        results[static_cast<size_t>(i)].code = std::move(wgslCode);
+    }
+
+    return results;
+}
+
 static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* global, const fs::path& modPath)
 {
     std::vector<std::string> searchPaths = {modPath.parent_path().string()};
@@ -160,20 +215,22 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
     Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, searchPaths);
     if (!session)
     {
-        std::println(stderr, "[shader_compiler] session init failed for {}\n", stem);
+        std::println(stderr, "[shader_compiler] session init failed for {}", stem);
         return {};
     }
 
     Slang::ComPtr<slang::IBlob> diag;
     slang::IModule* mod = session->loadModule(stem.c_str(), diag.writeRef());
+
     if (!mod)
     {
-        std::println(stderr, "loadModule({}): {}\n", stem, SlangBlobToStr(diag.get()));
+        std::println(stderr, "[shader_compiler] loadModule({}): {}", stem, SlangBlobToStr(diag.get()));
         return {};
     }
+
     if (diag && diag->getBufferSize())
     {
-        std::println(stderr, "loadModule warnings: {}\n", SlangBlobToStr(diag.get()));
+        std::println(stderr, "[shader_compiler] loadModule warnings: {}", SlangBlobToStr(diag.get()));
     }
 
     // gather all entrypoints: primitive approach is to compile and link these one by one, but we can
@@ -189,39 +246,122 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
         Slang::ComPtr<slang::IEntryPoint> ep;
         if (SLANG_FAILED(mod->getDefinedEntryPoint(i, ep.writeRef())))
         {
-            std::println(stderr, "[shader_compiler] getDefinedEntryPoint({}) failed for {}\n", i, stem);
+            std::println(stderr, "[shader_compiler] getDefinedEntryPoint({}) failed for {}", i, stem);
             continue;
         }
 
         assert(!entryPointNames.contains(i));
         entryPointNames[i] = ep->getFunctionReflection()->getName();
         entryPoints[i] = std::move(ep);
-
     }
 
-    // okay, now to link we create a composite component type with the module and all entrypoints, and then link that
-    std::vector<slang::IComponentType*> parts;
-    parts.reserve(1 + entryPoints.size());
-    parts.push_back(mod);
-    for (const auto& ep : entryPoints)
+    // print names of found entrypoints in module, just for sanity check / debugging
+    std::println(stderr, "[shader_compiler] found {} entrypoints in module {}:", epCount, stem);
+    for (SlangInt i = 0; i < epCount; ++i)
     {
-        parts.push_back(ep.get());
+        std::println(stderr, "[shader_compiler]   {}: {}", i, entryPointNames[i]);
     }
 
-    Slang::ComPtr<slang::IComponentType> composite;
-    if (SLANG_FAILED(session->createCompositeComponentType(parts.data(), static_cast<SlangInt>(parts.size()), composite.writeRef(), diag.writeRef())))
+    // create arrays of "module" strings that will be used to specialize the entrypoints
+    auto makeFftSizeSrc = [](uint32_t fftSize)->std::string
     {
-        std::println(stderr, "[shader_compiler] createComposite failed: {}\n", SlangBlobToStr(diag.get()));
-        return {};
-    }
+        return std::format("export static const int FFT_SIZE = {};\n", fftSize);
+    };
 
-    Slang::ComPtr<slang::IComponentType> linked;
-    if (SLANG_FAILED(composite->link(linked.writeRef(), diag.writeRef())))
+    auto makeWaveSizeSrc = [](uint32_t waveSize)->std::string
     {
-        std::println(stderr, "[shader_compiler] composite link failed: {}\n", SlangBlobToStr(diag.get()));
-        return {};
-    }
+        return std::format("export static const int FFT_WAVE_SIZE = {};\n", waveSize);
+    };
 
+    auto makeWaveOpsSrc = [](bool waveOps)->std::string
+    {
+        return std::format("export static const bool FFT_USE_WAVE_OPS = {};\n", waveOps ? "true" : "false");
+    };
+
+    const size_t fftSizeRange[] = {128, 256, 512, 1024};
+    const uint32_t waveSizeRange[] = {32, 64, 128};
+    const bool waveOpsRange[] = {false, true};
+
+    std::vector<CompiledEntryPoint> results;
+
+    // hold on to your seats.... I apologize for this. I am actually sorry.
+    size_t totalVariants = epCount * std::size(fftSizeRange) * std::size(waveSizeRange) * std::size(waveOpsRange);
+    results.reserve(totalVariants);
+    std::println(stderr, "[shader_compiler] compiling {} entrypoints with {} fft sizes, {} wave sizes, {} wave ops variants -> {} total variants",
+                 epCount, std::size(fftSizeRange), std::size(waveSizeRange), std::size(waveOpsRange), totalVariants);
+    
+    for (uint32_t fftSize : fftSizeRange)
+    {
+        std::string fftSizeStr = makeFftSizeSrc(fftSize);
+        std::string fftSizeModuleName = std::format("fft_size_module_{}", fftSize);
+        std::string fftSizeModulePath = std::format("fft_size_module_{}.slang", fftSize);
+        slang::IModule* fftSizeModule = session->loadModuleFromSourceString(fftSizeModuleName.c_str(),
+                                                                            fftSizeModulePath.c_str(),
+                                                                            fftSizeStr.c_str(),
+                                                                            diag.writeRef());
+
+        for (uint32_t waveSize : waveSizeRange)
+        {
+            std::string waveSizeStr = makeWaveSizeSrc(waveSize);
+            std::string waveSizeModuleName = std::format("wave_size_module_{}", waveSize);
+            std::string waveSizeModulePath = std::format("wave_size_module_{}.slang", waveSize);
+            slang::IModule* waveSizeModule = session->loadModuleFromSourceString(waveSizeModuleName.c_str(),
+                                                                                 waveSizeModulePath.c_str(),
+                                                                                 waveSizeStr.c_str(),
+                                                                                 diag.writeRef());
+
+            for (bool waveOps : waveOpsRange)
+            {
+                std::string waveOpsStr = makeWaveOpsSrc(waveOps);
+                std::string waveOpsModuleName = std::format("wave_ops_module_{}", waveOps ? "true" : "false");
+                std::string waveOpsModulePath = std::format("wave_ops_module_{}.slang", waveOps ? "true" : "false");
+                slang::IModule* waveOpsModule = session->loadModuleFromSourceString(waveOpsModuleName.c_str(),
+                                                                                    waveOpsModulePath.c_str(),
+                                                                                    waveOpsStr.c_str(),
+                                                                                    diag.writeRef());
+
+                std::string paramsStr = std::format(
+                    "FFT_SIZE={} FFT_WAVE_SIZE={} FFT_USE_WAVE_OPS={}",
+                    fftSize, waveSize, waveOps);
+                std::println(stderr, "[shader_compiler] compiling module {} with {}",
+                             stem, paramsStr);
+
+                std::vector<slang::IComponentType*> components = {fftSizeModule, waveSizeModule, waveOpsModule, mod};
+                // now add entrypoints to the component list, so we can link them all together
+                for (SlangInt i = 0; i < epCount; ++i)
+                {
+                    components.push_back(entryPoints[i].get());
+                }
+
+                auto variant_results = CompileModuleVariant(session,
+                                                            components, epCount,
+                                                            entryPointNames, fftSize,
+                                                            waveSize, waveOps);
+                if (!variant_results)
+                {
+                    auto inner_diag = variant_results.error();
+                    std::println(stderr, "[shader_compiler] compileModuleVariant failed for {} with {}",
+                                 stem, paramsStr);
+                    if (diag && diag->getBufferSize())
+                    {
+                        std::println(stderr, "[shader_compiler] Diagnostics: {}", SlangBlobToStr(diag.get()));
+                    }
+                    continue;
+                }
+                else
+                {
+                    std::println(stderr, "[shader_compiler] compileModuleVariant succeeded for {} with {}",
+                                 stem, paramsStr);
+                    auto& variant_entry_points = variant_results.value();
+                    results.insert(results.end(),
+                                   std::make_move_iterator(variant_entry_points.begin()),
+                                   std::make_move_iterator(variant_entry_points.end()));
+                }
+
+            }
+        }
+    }
+    std::println(stderr, "[shader_compiler] compiled {} entrypoints for module {}", results.size(), stem);
 
     return results;
 }
@@ -278,7 +418,8 @@ static void WriteHeader(
 
     for (const CompiledEntryPoint& shader : shaders)
     {
-        f << WriteWgslShaderSourceToCppArray(shader.code, GetShaderCodeArrayName(shader.name, shader.suffix));
+        const std::string shaderSuffix = std::format("_fft{}_wave{}_ops{}", shader.fftSize, shader.waveSize, shader.waveOps);
+        f << WriteWgslShaderSourceToCppArray(shader.code, GetShaderCodeArrayName(shader.name, shaderSuffix));
     }
 
     f << "} // namespace OceanFFT::Shaders\n";
@@ -364,7 +505,10 @@ int main(int argc, char** argv)
     for (auto& module_path : modulePaths)
     {
         std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
-        std::vector<CompiledEntryPoint> all_entry_points = CompileModule(global.get(), module_path);
+        auto entry_points = CompileModule(global.get(), module_path);
+        all_entry_points.insert(all_entry_points.end(),
+                                std::make_move_iterator(entry_points.begin()),
+                                std::make_move_iterator(entry_points.end()));
     }
 
     if (all_entry_points.empty())
