@@ -12,6 +12,10 @@
  *                  and emit a Get<Name>Wgsl(bool waveOps) selector for each pair.
  * --O<n>: optimization level, 0-3, s, or z. If unspecified, defaults to 0 (no optimizations).
  *         this is probably the one to use, since we just feed this into Tint at runtime
+ * --target <target>: "wgsl" or "spirv". Default is wgsl, if SPIR-V we will write out a uint32_t array
+ *                    of the SPIR-V binary for each entrypoint instead of WGSL source. This gives us
+ *                    the ability to use a mostly similar shader compilation pipeline/API for desktop
+ *                    and web, since Dawn can consume SPIR-V on desktop and WGSL on web. 
  */
 
 #include <slang-com-helper.h>
@@ -38,7 +42,7 @@ struct Macro
     std::string val;
 };
 
-struct CompiledEP
+struct CompiledEntryPoint
 {
     std::string name;    // entrypoint name, e.g. "Radix2_IFFT"
     std::string suffix;  // "", "_WaveOps", or "_NoWaveOps"
@@ -97,8 +101,9 @@ static std::string blobStr(slang::IBlob* b)
     return b ? std::string{static_cast<const char*>(b->getBufferPointer()), b->getBufferSize()} : "";
 }
 
-static Slang::ComPtr<slang::ISession> makeSession(
+static Slang::ComPtr<slang::ISession> MakeSlangSession(
     slang::IGlobalSession* global,
+    SlangCompileTarget target_format,
     std::span<const Macro> macros,
     std::span<const std::string> searchPaths)
 {
@@ -117,8 +122,8 @@ static Slang::ComPtr<slang::ISession> makeSession(
     }
 
     slang::TargetDesc td{};
-    td.format = SLANG_WGSL;
-    td.profile = global->findProfile("sm_6_10");
+    td.format = target_format;
+    td.profile = global->findProfile("spirv_1_6");
 
     slang::SessionDesc sd{};
     sd.targets          = &td;
@@ -147,7 +152,7 @@ static Slang::ComPtr<slang::ISession> makeSession(
 }
 
 
-static std::optional<std::string> compileEP(
+static std::optional<std::string> CompileEntryPoint(
     slang::ISession* session,
     slang::IModule* mod,
     slang::IEntryPoint* ep)
@@ -177,8 +182,9 @@ static std::optional<std::string> compileEP(
     return blobStr(code.get());
 }
 
-static std::vector<CompiledEP> compileModule(
+static std::vector<CompiledEntryPoint> CompileModule(
     slang::IGlobalSession* global,
+    SlangCompileTarget target_format,
     const fs::path& modPath,
     std::span<const Macro> macros,
     std::string_view suffix)
@@ -186,7 +192,7 @@ static std::vector<CompiledEP> compileModule(
     std::vector<std::string> searchPaths = {modPath.parent_path().string()};
     std::string stem = modPath.stem().string();
 
-    Slang::ComPtr<slang::ISession> session = makeSession(global, macros, searchPaths);
+    Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, target_format, macros, searchPaths);
     if (!session)
     {
         std::println(stderr, "[shader_compiler] session init failed for {}\n", stem);
@@ -205,7 +211,7 @@ static std::vector<CompiledEP> compileModule(
         std::println(stderr, "loadModule warnings: {}\n", blobStr(diag.get()));
     }
 
-    std::vector<CompiledEP> results;
+    std::vector<CompiledEntryPoint> results;
     const SlangInt epCount = mod->getDefinedEntryPointCount();
     for (SlangInt i = 0; i < epCount; ++i)
     {
@@ -218,7 +224,7 @@ static std::vector<CompiledEP> compileModule(
         const char* name = ep->getFunctionReflection()->getName();
         std::println(stderr, "[shader_compiler] Compiling entry point | [Module] {} [Entry Point] {}{}", stem, name, suffix);
 
-        std::optional<std::string> wgsl = compileEP(session.get(), mod, ep.get());
+        std::optional<std::string> wgsl = CompileEntryPoint(session.get(), mod, ep.get());
         if (wgsl)
         {
             results.push_back({name, std::string{suffix}, std::move(*wgsl)});
@@ -231,7 +237,7 @@ static std::vector<CompiledEP> compileModule(
     return results;
 }
 
-static std::string makeIdent(std::string_view name, std::string_view suffix)
+static std::string GetShaderCodeArrayName(std::string_view name, std::string_view suffix)
 {
     std::string s{"k_"};
     for (char c : name)   s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
@@ -239,7 +245,10 @@ static std::string makeIdent(std::string_view name, std::string_view suffix)
     return s;
 }
 
-static void writeHeader(const std::vector<CompiledEP>& shaders, const fs::path& outPath)
+static void WriteHeader(
+    SlangCompileTarget target_format,
+    const std::vector<CompiledEntryPoint>& shaders,
+    const fs::path& outPath)
 {
     fs::path parentDir = outPath.parent_path();
     if (!fs::exists(parentDir))
@@ -264,38 +273,67 @@ static void writeHeader(const std::vector<CompiledEP>& shaders, const fs::path& 
          "#include <string_view>\n\n"
          "namespace OceanFFT::Shaders\n{\n\n";
 
-    constexpr std::string_view DELIM = "WGSL_END";
-
-    for (const CompiledEP& s : shaders)
+    if (target_format == SlangCompileTarget::SLANG_WGSL)
     {
-        f << "inline constexpr std::string_view " << makeIdent(s.name, s.suffix)
-          << " = R\"" << DELIM << "(\n" << s.wgsl << ")" << DELIM << "\";\n\n";
-    }
+        constexpr std::string_view DELIM = "WGSL_END";
 
-    // Selectors for wave variant pairs
-    std::unordered_map<std::string, std::array<bool, 2>> seen; // [hasWave, hasNoWave]
-    for (const CompiledEP& s : shaders)
-    {
-        if (s.suffix == "_WaveOps")   seen[s.name][0] = true;
-        if (s.suffix == "_NoWaveOps") seen[s.name][1] = true;
-    }
-
-    for (const auto& [name, flags] : seen)
-    {
-
-        if (!flags[0] || !flags[1])
+        for (const CompiledEntryPoint& s : shaders)
         {
-            continue;
+            f << "inline constexpr std::string_view " << GetShaderCodeArrayName(s.name, s.suffix)
+            << " = R\"" << DELIM << "(\n" << s.wgsl << ")" << DELIM << "\";\n\n";
         }
 
-        f << "inline std::string_view Get" << name << "Wgsl(bool waveOps) noexcept\n{\n"
-          << "    return waveOps ? " << makeIdent(name, "_WaveOps")
-          << " : " << makeIdent(name, "_NoWaveOps") << ";\n"
-          << "}\n\n";
+        // Selectors for wave variant pairs
+        std::unordered_map<std::string, std::array<bool, 2>> seen; // [hasWave, hasNoWave]
+        for (const CompiledEntryPoint& s : shaders)
+        {
+            if (s.suffix == "_WaveOps")   seen[s.name][0] = true;
+            if (s.suffix == "_NoWaveOps") seen[s.name][1] = true;
+        }
+
+        for (const auto& [name, flags] : seen)
+        {
+
+            if (!flags[0] || !flags[1])
+            {
+                continue;
+            }
+
+            f << "inline std::string_view Get" << name << "Wgsl(bool waveOps) noexcept\n{\n"
+            << "    return waveOps ? " << GetShaderCodeArrayName(name, "_WaveOps")
+            << " : " << GetShaderCodeArrayName(name, "_NoWaveOps") << ";\n"
+            << "}\n\n";
+        }
+
+        f << "} // namespace OceanFFT::Shaders\n";
+        f.close();
+    }
+    else if (target_format == SlangCompileTarget::SLANG_WGSL_SPIRV)
+    {
+        for (const CompiledEntryPoint& s : shaders)
+        {
+            f << "inline constexpr std::array<uint32_t, " << s.wgsl.size() / sizeof(uint32_t) << "> "
+            << GetShaderCodeArrayName(s.name, s.suffix) << " = {";
+            const uint32_t* data = reinterpret_cast<const uint32_t*>(s.wgsl.data());
+            // print about 8 uint32_t values per line, comma-separated
+            for (size_t i = 0; i < s.wgsl.size() / sizeof(uint32_t); ++i)
+            {
+                f << data[i];
+                if (i + 1 < s.wgsl.size() / sizeof(uint32_t))
+                {
+                    f << ", ";
+                }
+                if ((i + 1) % 8 == 0)
+                {
+                    f << "\n";
+                }
+            }
+            f << "};\n\n";
+        }
+        f << "} // namespace OceanFFT::Shaders\n";
+        f.close();
     }
 
-    f << "} // namespace OceanFFT::Shaders\n";
-    f.close();
     std::println(stderr, "wrote {} entrypoints -> {}", shaders.size(), outPath.string());
 }
 
@@ -307,6 +345,8 @@ int main(int argc, char** argv)
     bool waveVariants = false;
 
     AddDefaultCompileOptions();
+
+    SlangCompileTarget targetFormat = SlangCompileTarget::SLANG_WGSL;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -358,6 +398,23 @@ int main(int argc, char** argv)
             }
             s_CompileOptions.push_back(optLevel);
         }
+        else if (arg.starts_with("--target") && i + 1 < argc)
+        {
+            std::string target{argv[++i]};
+            if (target == "wgsl")
+            {
+                targetFormat = SlangCompileTarget::SLANG_WGSL;
+            }
+            else if (target == "spirv")
+            {
+                targetFormat = SlangCompileTarget::SLANG_WGSL_SPIRV;
+            }
+            else
+            {
+                std::println(stderr, "[shader_compiler] unknown target: {}\n", target);
+                return 1;
+            }
+        }
         else if (!arg.starts_with('-'))
         {
             modulePaths.emplace_back(argv[i]);
@@ -385,25 +442,32 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // messy disable of some state here: if on desktop, don't bother with wave variants.
+    // at this point, waveops should be pretty much at 100% desktop support (and are on our testing hw)
+    if (targetFormat == SlangCompileTarget::SLANG_WGSL_SPIRV)
+    {
+        waveVariants = false;
+    }
+
     Slang::ComPtr<slang::IGlobalSession> global;
     slang::createGlobalSession(global.writeRef());
 
-    std::vector<CompiledEP> all;
+    std::vector<CompiledEntryPoint> all;
     for (auto& mod : modulePaths)
     {
         std::println(stderr, "[shader_compiler] Compiling module: {}", mod.string());
         if (waveVariants)
         {
-            auto wave = compileModule(global.get(), mod, defines, "_WaveOps");
+            auto wave = CompileModule(global.get(), targetFormat, mod, defines, "_WaveOps");
             std::vector<Macro> noWaveDefs = defines;
             noWaveDefs.push_back({"OCEAN_FFT_DISABLE_WAVE_OPS", "1"});
-            auto nowave = compileModule(global.get(), mod, noWaveDefs, "_NoWaveOps");
+            auto nowave = CompileModule(global.get(), targetFormat, mod, noWaveDefs, "_NoWaveOps");
             for (auto& e : wave)   all.push_back(std::move(e));
             for (auto& e : nowave) all.push_back(std::move(e));
         }
         else
         {
-            auto compiled = compileModule(global.get(), mod, defines, "");
+            auto compiled = CompileModule(global.get(), targetFormat, mod, defines, "");
             for (auto& e : compiled) all.push_back(std::move(e));
         }
     }
@@ -414,6 +478,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    writeHeader(all, outputPath);
+    WriteHeader(targetFormat, all, outputPath);
     return 0;
 }
