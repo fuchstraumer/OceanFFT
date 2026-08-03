@@ -14,6 +14,9 @@ set(SLANG_ENABLE_SLANG_RHI OFF CACHE BOOL "Use slang-rhi as dependency")
 set(SLANG_EXCLUDE_DAWN ON CACHE BOOL "Optionally exclude webgpu_dawn from the build")
 set(SLANG_EXCLUDE_TINT ON CACHE BOOL "Optionally exclude slang-tint from the build")
 set(SLANG_ENABLE_RELEASE_LTO ON CACHE BOOL "Enable LTO for release builds")
+set(SLANG_USE_SYSTEM_VULKAN_HEADERS ON)
+set(SLANG_ENABLE_MIMALLOC OFF)
+set(SLANG_ENABLE_SPIRV_TOOLS_MIMALLOC OFF)
 
 # Function to organize all Slang targets into IDE folders
 function(organize_slang_targets)

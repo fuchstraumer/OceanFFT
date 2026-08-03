@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
 project(OceanFFT C CXX)
 
+# cmake/ contains our own FindVulkanHeaders.cmake; must be set before any find_package calls
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+# need this to generate various support files for the ocean fft
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+# need to find vulkan upfront so i can get dawn and slang to stop stomping on each other with their vulkan headers
+find_package(Vulkan REQUIRED)
+set(DAWN_VULKAN_HEADERS_DIR ${Vulkan_INCLUDE_DIR})
+set(VulkanHeaders_INCLUDE_DIR ${Vulkan_INCLUDE_DIR} CACHE PATH "" FORCE)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -9,14 +19,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if (MSVC)
     # MP = helps with slang compile, bigobj = same deal, slang can break without this
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /Gy")
 endif()
 
-# removed slang: too many bugs, and all we need is slangc for compiling shaders,
-# which we can do with prebuilt binaries
-include(cmake/ConfigureSlang.cmake)
-add_subdirectory(third_party/slang)
-organize_slang_targets()
 
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation")
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build the GLFW example programs")
@@ -25,12 +30,18 @@ set(GLFW_LIBRARY_TYPE "STATIC" CACHE STRING "Library type override for GLFW (SHA
 add_subdirectory(third_party/glfw)
 set_target_properties(glfw PROPERTIES FOLDER "third_party")
 
-if(NOT EMSCRIPTEN)
-    add_subdirectory(shaders)
-endif()
+# removed slang: too many bugs, and all we need is slangc for compiling shaders,
+# which we can do with prebuilt binaries
+include(cmake/ConfigureSlang.cmake)
+add_subdirectory(third_party/slang)
+organize_slang_targets()
 
 include(cmake/ConfigureDawn.cmake)
 add_subdirectory(third_party/dawn EXCLUDE_FROM_ALL)
+
+if(NOT EMSCRIPTEN)
+    add_subdirectory(shaders)
+endif()
 
 # rope together source files for imgui
 set(IMGUI_SOURCES
@@ -40,6 +51,27 @@ set(IMGUI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/imgui_widgets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_glfw.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_wgpu.cpp)
+
+set(OCEAN_FFT_GENERATED_OUTPUTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/DonelanBannerNormLUT.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/DonelanBannerNormLUT.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/SinCosLUT.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/SinCosLUT.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/compute/OceanFFT_Generated.slang")
+
+add_custom_command(
+    OUTPUT ${OCEAN_FFT_GENERATED_OUTPUTS}
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ocean_fft_support.py"
+            --config "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
+    DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ocean_fft_support.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Generating OceanFFT support files..."
+    VERBATIM)
+
+# Ensures slang file generates even if OceanFFT target isn't built first
+add_custom_target(OceanFFT_GeneratedSources ALL DEPENDS ${OCEAN_FFT_GENERATED_OUTPUTS})
 
 set(OceanFFT_Headers
     "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/DonelanBannerNormLUT.h"
@@ -61,6 +93,7 @@ set(OceanFFT_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/SinCosLUT.cpp")
 
 add_executable(OceanFFT ${OceanFFT_SOURCES} ${OceanFFT_Headers})
+add_dependencies(OceanFFT OceanFFT_GeneratedSources)
 target_include_directories(OceanFFT PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
@@ -113,6 +146,6 @@ else()
         $<$<CXX_COMPILER_ID:MSVC>:/fp:fast>
         $<$<CXX_COMPILER_ID:MSVC>:/W4>)
 
-    target_link_libraries(OceanFFT PRIVATE glfw webgpu_glfw webgpu_cpp)
+    target_link_libraries(OceanFFT PRIVATE webgpu_dawn glfw webgpu_glfw webgpu_cpp)
     # similar link options locally
 endif()
