@@ -6,16 +6,8 @@
  * Usage:
  *   OceanShaderCompiler --output <header.hpp> [--wave-variants]
  *                       [--define K[=V]]... <module.slang>...
- *
- * --wave-variants: compile every entrypoint twice — once normally (_WaveOps)
- *                  and once with OCEAN_FFT_DISABLE_WAVE_OPS=1 (_NoWaveOps) —
- *                  and emit a Get<Name>Wgsl(bool waveOps) selector for each pair.
  * --O<n>: optimization level, 0-3, s, or z. If unspecified, defaults to 0 (no optimizations).
  *         this is probably the one to use, since we just feed this into Tint at runtime
- * --target <target>: "wgsl" or "spirv". Default is wgsl, if SPIR-V we will write out a uint32_t array
- *                    of the SPIR-V binary for each entrypoint instead of WGSL source. This gives us
- *                    the ability to use a mostly similar shader compilation pipeline/API for desktop
- *                    and web, since Dawn can consume SPIR-V on desktop and WGSL on web. 
  */
 
 #include <slang-com-helper.h>
@@ -33,6 +25,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <variant>
+#include <ranges>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -42,68 +37,73 @@ struct Macro
     std::string val;
 };
 
+// as in code type, not vert/frag/compute etc
+enum class EntryPointType : uint8_t
+{
+    Invalid = 0,
+    WGSL,
+    SPIRV,
+};
+
 struct CompiledEntryPoint
 {
-    std::string name;    // entrypoint name, e.g. "Radix2_IFFT"
-    std::string suffix;  // "", "_WaveOps", or "_NoWaveOps"
-    std::string wgsl;
+    EntryPointType type{ EntryPointType::Invalid };
+    std::string name;
+    std::string suffix;
+    std::variant<std::string, std::vector<uint32_t>> code;
 };
 
 // Add compile options from command line invocations
 static std::vector<slang::CompilerOptionEntry> s_CompileOptions;
+constexpr static const char* k_allWarningsAsErrorsStr = "all";
+constexpr static SlangInt k_WgslTargetIndex = 0;
+constexpr static SlangInt k_SpirvTargetIndex = 1;
 
 void AddDefaultCompileOptions()
 {
     // catch all warnings as errors, since wgsl is a picky and strict target!
-    slang::CompilerOptionEntry optAllWarningsAsErrors{};
-    // slang seems to take this as a view, and it's intended to be used inline when compiling, 
-    // so we can just use a static string literal here and it should be fine
     slang::CompilerOptionEntry optWarningLevel{};
     optWarningLevel.name = slang::CompilerOptionName::WarningLevel;
     optWarningLevel.value.kind = slang::CompilerOptionValueKind::Int;
+    // only level enabled by default is "extra". so we add pedantic and all
     optWarningLevel.value.intValue0 = SlangWarningLevel::SLANG_WARNING_LEVEL_PEDANTIC;
     s_CompileOptions.push_back(optWarningLevel);
     optWarningLevel.value.intValue0 = SlangWarningLevel::SLANG_WARNING_LEVEL_ALL;
     s_CompileOptions.push_back(optWarningLevel);
-    
-    constexpr const char* k_allWarningsAsErrors = "all";
+    // all warnings should be errors. also slang takes the string as a view, so its a constexpr static
+    // at program scope. note that a lot of these should be caught from how much we've been testing
+    // with test_ifft.py, but still I want to be as sure as I can be
+    slang::CompilerOptionEntry optAllWarningsAsErrors{};
     optAllWarningsAsErrors.value.kind = slang::CompilerOptionValueKind::String;
-    optAllWarningsAsErrors.value.stringValue0 = k_allWarningsAsErrors;
+    optAllWarningsAsErrors.value.stringValue0 = k_allWarningsAsErrorsStr;
     optAllWarningsAsErrors.name = slang::CompilerOptionName::WarningsAsErrors;
-    // Disabled for now! some of it's suggested changes broke compile.
     s_CompileOptions.push_back(optAllWarningsAsErrors);
     // we want to use fast math, we were pretty intentional about our math and used FMA/mad where we could for precision
     slang::CompilerOptionEntry optFloatingPointMode{};
     optFloatingPointMode.value.kind = slang::CompilerOptionValueKind::Int;
     optFloatingPointMode.name = slang::CompilerOptionName::FloatingPointMode;
-    optFloatingPointMode.value.intValue0 = static_cast<int32_t>(SlangFloatingPointMode::SLANG_FLOATING_POINT_MODE_PRECISE);
+    optFloatingPointMode.value.intValue0 = static_cast<int32_t>(SlangFloatingPointMode::SLANG_FLOATING_POINT_MODE_FAST);
     s_CompileOptions.push_back(optFloatingPointMode);
-    // try to disable name mangling, since we want to be able to read our compiled-in shaders
-    // and they'll be passing through Tint at runtime anyways (correctness beats perf, for web)
-    slang::CompilerOptionEntry optDisableNameMangling{}; // note this is experimental
-    optDisableNameMangling.value.kind = slang::CompilerOptionValueKind::Int;
-    optDisableNameMangling.name = slang::CompilerOptionName::NoMangle;
-    optDisableNameMangling.value.intValue0 = static_cast<int32_t>(true);
-    //s_CompileOptions.push_back(optDisableNameMangling);
+    // disabling debug info, we've tested these shaders in SlangPy using scripts/test_ifft.py.
+    // that's the nice thing about using Slang, at least - source modifications will carry here too
     slang::CompilerOptionEntry optDebugInfoLevel{};
     optDebugInfoLevel.name = slang::CompilerOptionName::DebugInfoIncludeSource;
     optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
-    optDebugInfoLevel.value.intValue0 = static_cast<int32_t>(true);
+    optDebugInfoLevel.value.intValue0 = static_cast<int32_t>(false);
     s_CompileOptions.push_back(optDebugInfoLevel);
     optDebugInfoLevel.name = slang::CompilerOptionName::DebugInformation;
     optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
-    optDebugInfoLevel.value.intValue0 = SlangDebugInfoLevel::SLANG_DEBUG_INFO_LEVEL_MAXIMAL;
+    optDebugInfoLevel.value.intValue0 = SlangDebugInfoLevel::SLANG_DEBUG_INFO_LEVEL_NONE;
     s_CompileOptions.push_back(optDebugInfoLevel);
 }
 
-static std::string blobStr(slang::IBlob* b)
+static std::string SlangBlobToStr(slang::IBlob* b)
 {
-    return b ? std::string{static_cast<const char*>(b->getBufferPointer()), b->getBufferSize()} : "";
+    return b ? std::string{ static_cast<const char*>(b->getBufferPointer()), b->getBufferSize() } : "";
 }
 
 static Slang::ComPtr<slang::ISession> MakeSlangSession(
     slang::IGlobalSession* global,
-    SlangCompileTarget target_format,
     std::span<const Macro> macros,
     std::span<const std::string> searchPaths)
 {
@@ -122,12 +122,16 @@ static Slang::ComPtr<slang::ISession> MakeSlangSession(
     }
 
     slang::TargetDesc td{};
-    td.format = target_format;
+    td.format = SlangCompileTarget::SLANG_WGSL;
     td.profile = global->findProfile("spirv_1_6");
+    slang::TargetDesc td_spirv{};
+    td_spirv.format = SlangCompileTarget::SLANG_WGSL_SPIRV;
+    td_spirv.profile = global->findProfile("spirv_1_6");
+    const std::vector<slang::TargetDesc> targets = {td, td_spirv};
 
     slang::SessionDesc sd{};
-    sd.targets          = &td;
-    sd.targetCount      = 1;
+    sd.targets          = targets.data();
+    sd.targetCount      = static_cast<SlangInt>(targets.size());
     sd.preprocessorMacros      = mds.data();
     sd.preprocessorMacroCount  = static_cast<SlangInt>(mds.size());
     sd.searchPaths      = paths.data();
@@ -151,40 +155,44 @@ static Slang::ComPtr<slang::ISession> MakeSlangSession(
     return session;
 }
 
-
-static std::optional<std::string> CompileEntryPoint(
-    slang::ISession* session,
-    slang::IModule* mod,
-    slang::IEntryPoint* ep)
+std::string ExtractEntryPointBytecodeWGSL(Slang::ComPtr<slang::IComponentType> program_pointer, SlangInt entryPointIndex)
 {
-    Slang::ComPtr<slang::IBlob> diag, code;
-    Slang::ComPtr<slang::IComponentType> composite, linked;
-
-    slang::IComponentType* parts[] = {mod, ep};
-    if (SLANG_FAILED(session->createCompositeComponentType(parts, 2, composite.writeRef(), diag.writeRef())))
+    Slang::ComPtr<slang::IBlob> codeBlob;
+    Slang::ComPtr<slang::IBlob> diag;
+    if (SLANG_FAILED(program_pointer->getEntryPointCode(entryPointIndex, k_WgslTargetIndex, codeBlob.writeRef(), diag.writeRef())))
     {
-        std::println(stderr, "[slang] createComposite failed: {}\n", blobStr(diag.get()));
+        std::println(stderr, "[shader_compiler] ExtractEntryPointBytecodeWGSL({}) failed\n", entryPointIndex);
+        if (diag && diag->getBufferSize())
+        {
+            std::println(stderr, "[shader_compiler] Diagnostics: {}\n", SlangBlobToStr(diag.get()));
+        }
         return {};
     }
 
-    if (SLANG_FAILED(composite->link(linked.writeRef(), diag.writeRef())))
+    return SlangBlobToStr(codeBlob.get());
+}
+
+std::vector<uint32_t> ExtractEntryPointBytecodeSPIRV(Slang::ComPtr<slang::IComponentType> program_pointer, SlangInt entryPointIndex)
+{
+    Slang::ComPtr<slang::IBlob> codeBlob;
+    Slang::ComPtr<slang::IBlob> diag;
+    if (SLANG_FAILED(program_pointer->getEntryPointCode(entryPointIndex, k_SpirvTargetIndex, codeBlob.writeRef(), diag.writeRef())))
     {
-        std::println(stderr, "[slang] composite link failed: {}\n", blobStr(diag.get()));
+        std::println(stderr, "[shader_compiler] ExtractEntryPointBytecodeSPIRV({}) failed\n", entryPointIndex);
+        if (diag && diag->getBufferSize())
+        {
+            std::println(stderr, "[shader_compiler] Diagnostics: {}\n", SlangBlobToStr(diag.get()));
+        }
         return {};
     }
-
-    if (SLANG_FAILED(linked->getEntryPointCode(0, 0, code.writeRef(), diag.writeRef())))
-    {
-        std::println(stderr, "[slang] getEntryPointCode failed: {}\n", blobStr(diag.get()));
-        return {};
-    }
-
-    return blobStr(code.get());
+    // is this valid.... i think they store their spir-v as bytes....
+    const uint32_t* data = reinterpret_cast<const uint32_t*>(codeBlob->getBufferPointer());
+    size_t size = codeBlob->getBufferSize() / sizeof(uint32_t);
+    return std::vector<uint32_t>(data, data + size);
 }
 
 static std::vector<CompiledEntryPoint> CompileModule(
     slang::IGlobalSession* global,
-    SlangCompileTarget target_format,
     const fs::path& modPath,
     std::span<const Macro> macros,
     std::string_view suffix)
@@ -192,7 +200,7 @@ static std::vector<CompiledEntryPoint> CompileModule(
     std::vector<std::string> searchPaths = {modPath.parent_path().string()};
     std::string stem = modPath.stem().string();
 
-    Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, target_format, macros, searchPaths);
+    Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, macros, searchPaths);
     if (!session)
     {
         std::println(stderr, "[shader_compiler] session init failed for {}\n", stem);
@@ -203,50 +211,107 @@ static std::vector<CompiledEntryPoint> CompileModule(
     slang::IModule* mod = session->loadModule(stem.c_str(), diag.writeRef());
     if (!mod)
     {
-        std::println(stderr, "loadModule({}): {}\n", stem, blobStr(diag.get()));
+        std::println(stderr, "loadModule({}): {}\n", stem, SlangBlobToStr(diag.get()));
         return {};
     }
     if (diag && diag->getBufferSize())
     {
-        std::println(stderr, "loadModule warnings: {}\n", blobStr(diag.get()));
+        std::println(stderr, "loadModule warnings: {}\n", SlangBlobToStr(diag.get()));
     }
 
-    std::vector<CompiledEntryPoint> results;
+    // gather all entrypoints: primitive approach is to compile and link these one by one, but we can
+    // actually do a single link and then query the entrypoints from the module. this is a bit more efficient,
+    // and also allows us to get the entrypoint names for free. (DiamondDogs does this)
     const SlangInt epCount = mod->getDefinedEntryPointCount();
+    std::vector<Slang::ComPtr<slang::IEntryPoint>> entryPoints(epCount);
+    // annoying thing: entrypoints are accessed by index after linking, but we can only get the names before linking, so we
+    // need to have this map to map the indices back to the name
+    std::unordered_map<SlangInt, std::string> entryPointNames;
     for (SlangInt i = 0; i < epCount; ++i)
     {
         Slang::ComPtr<slang::IEntryPoint> ep;
         if (SLANG_FAILED(mod->getDefinedEntryPoint(i, ep.writeRef())))
         {
+            std::println(stderr, "[shader_compiler] getDefinedEntryPoint({}) failed for {}\n", i, stem);
             continue;
         }
 
-        const char* name = ep->getFunctionReflection()->getName();
-        std::println(stderr, "[shader_compiler] Compiling entry point | [Module] {} [Entry Point] {}{}", stem, name, suffix);
+        assert(!entryPointNames.contains(i));
+        entryPointNames[i] = ep->getFunctionReflection()->getName();
+        entryPoints[i] = std::move(ep);
 
-        std::optional<std::string> wgsl = CompileEntryPoint(session.get(), mod, ep.get());
-        if (wgsl)
-        {
-            results.push_back({name, std::string{suffix}, std::move(*wgsl)});
-        }
-        else
-        {
-            std::println(stderr, "  FAILED: {}{}\n", name, suffix);
-        }
     }
+
+    // okay, now to link we create a composite component type with the module and all entrypoints, and then link that
+    std::vector<slang::IComponentType*> parts;
+    parts.reserve(1 + entryPoints.size());
+    parts.push_back(mod);
+    for (const auto& ep : entryPoints)
+    {
+        parts.push_back(ep.get());
+    }
+
+    Slang::ComPtr<slang::IComponentType> composite;
+    if (SLANG_FAILED(session->createCompositeComponentType(parts.data(), static_cast<SlangInt>(parts.size()), composite.writeRef(), diag.writeRef())))
+    {
+        std::println(stderr, "[shader_compiler] createComposite failed: {}\n", SlangBlobToStr(diag.get()));
+        return {};
+    }
+
+    Slang::ComPtr<slang::IComponentType> linked;
+    if (SLANG_FAILED(composite->link(linked.writeRef(), diag.writeRef())))
+    {
+        std::println(stderr, "[shader_compiler] composite link failed: {}\n", SlangBlobToStr(diag.get()));
+        return {};
+    }
+
+    // now we can go through and individually get the code for each entrypoint, and store it in our results vector
+    std::vector<CompiledEntryPoint> results; results.reserve(epCount * 2); // each entrypoint has a WGSL and SPIR-V variant
+    for (const auto&[i, name] : entryPointNames)
+    {
+        CompiledEntryPoint wgsl{};
+        wgsl.name = name;
+        wgsl.suffix = std::string(suffix) + "_WGSL";
+        wgsl.type = EntryPointType::WGSL;
+        wgsl.code = ExtractEntryPointBytecodeWGSL(linked, i);
+        results.push_back(std::move(wgsl));
+
+        CompiledEntryPoint spirv{};
+        spirv.name = name;
+        spirv.suffix = std::string(suffix) + "_SPIRV";
+        spirv.type = EntryPointType::SPIRV;
+        spirv.code = ExtractEntryPointBytecodeSPIRV(linked, i);
+        results.push_back(std::move(spirv));
+    }
+
+
     return results;
 }
 
 static std::string GetShaderCodeArrayName(std::string_view name, std::string_view suffix)
 {
     std::string s{"k_"};
-    for (char c : name)   s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
-    for (char c : suffix) s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
+    for (char c : name)
+    {
+        s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
+    }
+    for (char c : suffix)
+    {
+        s += (std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
+    }
     return s;
 }
 
+std::string WriteWgslShaderSourceToCppArray(const std::string& wgslSource, const std::string& arrayName)
+{
+    std::string cppArray;
+    cppArray += "inline constexpr std::string_view " + arrayName + " = R\"WGSL_END(\n";
+    cppArray += wgslSource;
+    cppArray += ")WGSL_END\";\n";
+    return cppArray;
+}
+
 static void WriteHeader(
-    SlangCompileTarget target_format,
     const std::vector<CompiledEntryPoint>& shaders,
     const fs::path& outPath)
 {
@@ -273,66 +338,41 @@ static void WriteHeader(
          "#include <string_view>\n\n"
          "namespace OceanFFT::Shaders\n{\n\n";
 
-    if (target_format == SlangCompileTarget::SLANG_WGSL)
+    // sort the shaders array - split it into two vectors. use std::ranges::partition since thats neat and fun and new to me
+    std::vector<CompiledEntryPoint> wgsl_shaders(shaders.size() / 2);
+    std::vector<CompiledEntryPoint> spirv_shaders(shaders.size() / 2);
+    auto sort_predicate = [](const CompiledEntryPoint& shader) { return shader.type == EntryPointType::WGSL; };
+    auto result = std::ranges::partition_copy(shaders, wgsl_shaders.begin(), spirv_shaders.begin(), sort_predicate);
+
+    for (const CompiledEntryPoint& shader : wgsl_shaders)
     {
-        constexpr std::string_view DELIM = "WGSL_END";
-
-        for (const CompiledEntryPoint& s : shaders)
-        {
-            f << "inline constexpr std::string_view " << GetShaderCodeArrayName(s.name, s.suffix)
-            << " = R\"" << DELIM << "(\n" << s.wgsl << ")" << DELIM << "\";\n\n";
-        }
-
-        // Selectors for wave variant pairs
-        std::unordered_map<std::string, std::array<bool, 2>> seen; // [hasWave, hasNoWave]
-        for (const CompiledEntryPoint& s : shaders)
-        {
-            if (s.suffix == "_WaveOps")   seen[s.name][0] = true;
-            if (s.suffix == "_NoWaveOps") seen[s.name][1] = true;
-        }
-
-        for (const auto& [name, flags] : seen)
-        {
-
-            if (!flags[0] || !flags[1])
-            {
-                continue;
-            }
-
-            f << "inline std::string_view Get" << name << "Wgsl(bool waveOps) noexcept\n{\n"
-            << "    return waveOps ? " << GetShaderCodeArrayName(name, "_WaveOps")
-            << " : " << GetShaderCodeArrayName(name, "_NoWaveOps") << ";\n"
-            << "}\n\n";
-        }
-
-        f << "} // namespace OceanFFT::Shaders\n";
-        f.close();
+        f << WriteWgslShaderSourceToCppArray(std::get<std::string>(shader.code), GetShaderCodeArrayName(shader.name, shader.suffix));
     }
-    else if (target_format == SlangCompileTarget::SLANG_WGSL_SPIRV)
+
+    for (const CompiledEntryPoint& shader : spirv_shaders)
     {
-        for (const CompiledEntryPoint& s : shaders)
+        f << "#if !defined(__EMSCRIPTEN__)\n\n";
+        f << "inline constexpr std::array<uint32_t, " << std::get<std::vector<uint32_t>>(shader.code).size() << "> "
+          << GetShaderCodeArrayName(shader.name, shader.suffix) << " = {";
+        const std::vector<uint32_t>& data = std::get<std::vector<uint32_t>>(shader.code);
+        for (size_t i = 0; i < data.size(); ++i)
         {
-            f << "inline constexpr std::array<uint32_t, " << s.wgsl.size() / sizeof(uint32_t) << "> "
-            << GetShaderCodeArrayName(s.name, s.suffix) << " = {";
-            const uint32_t* data = reinterpret_cast<const uint32_t*>(s.wgsl.data());
-            // print about 8 uint32_t values per line, comma-separated
-            for (size_t i = 0; i < s.wgsl.size() / sizeof(uint32_t); ++i)
+            f << data[i];
+            if (i + 1 < data.size())
             {
-                f << data[i];
-                if (i + 1 < s.wgsl.size() / sizeof(uint32_t))
-                {
-                    f << ", ";
-                }
-                if ((i + 1) % 8 == 0)
-                {
-                    f << "\n";
-                }
+                f << ", ";
             }
-            f << "};\n\n";
+            if ((i + 1) % 8 == 0)
+            {
+                f << "\n";
+            }
         }
-        f << "} // namespace OceanFFT::Shaders\n";
-        f.close();
+        f << "};\n\n";
+        f << "#endif // !defined(__EMSCRIPTEN__)\n\n";
     }
+
+    f << "} // namespace OceanFFT::Shaders\n";
+    f.close();
 
     std::println(stderr, "wrote {} entrypoints -> {}", shaders.size(), outPath.string());
 }
@@ -345,8 +385,6 @@ int main(int argc, char** argv)
     bool waveVariants = false;
 
     AddDefaultCompileOptions();
-
-    SlangCompileTarget targetFormat = SlangCompileTarget::SLANG_WGSL;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -398,23 +436,6 @@ int main(int argc, char** argv)
             }
             s_CompileOptions.push_back(optLevel);
         }
-        else if (arg.starts_with("--target") && i + 1 < argc)
-        {
-            std::string target{argv[++i]};
-            if (target == "wgsl")
-            {
-                targetFormat = SlangCompileTarget::SLANG_WGSL;
-            }
-            else if (target == "spirv")
-            {
-                targetFormat = SlangCompileTarget::SLANG_WGSL_SPIRV;
-            }
-            else
-            {
-                std::println(stderr, "[shader_compiler] unknown target: {}\n", target);
-                return 1;
-            }
-        }
         else if (!arg.starts_with('-'))
         {
             modulePaths.emplace_back(argv[i]);
@@ -422,10 +443,14 @@ int main(int argc, char** argv)
     }
 
     // if no optimization option in s_CompilerOptions, add default one that disables all optimizations
-    auto hasOpt = std::find_if(s_CompileOptions.begin(), s_CompileOptions.end(),
-        [](const slang::CompilerOptionEntry& opt) {
+    auto hasOpt = std::find_if(
+        s_CompileOptions.begin(),
+        s_CompileOptions.end(),
+        [](const slang::CompilerOptionEntry& opt)
+        {
             return opt.name == slang::CompilerOptionName::Optimization;
         });
+
     if (hasOpt == s_CompileOptions.end())
     {
         slang::CompilerOptionEntry optLevel{};
@@ -442,42 +467,48 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // messy disable of some state here: if on desktop, don't bother with wave variants.
-    // at this point, waveops should be pretty much at 100% desktop support (and are on our testing hw)
-    if (targetFormat == SlangCompileTarget::SLANG_WGSL_SPIRV)
-    {
-        waveVariants = false;
-    }
-
     Slang::ComPtr<slang::IGlobalSession> global;
     slang::createGlobalSession(global.writeRef());
 
-    std::vector<CompiledEntryPoint> all;
-    for (auto& mod : modulePaths)
+    std::vector<CompiledEntryPoint> all_entry_points;
+    all_entry_points.reserve(64); // too much but w/e
+    for (auto& module_path : modulePaths)
     {
-        std::println(stderr, "[shader_compiler] Compiling module: {}", mod.string());
-        if (waveVariants)
-        {
-            auto wave = CompileModule(global.get(), targetFormat, mod, defines, "_WaveOps");
-            std::vector<Macro> noWaveDefs = defines;
-            noWaveDefs.push_back({"OCEAN_FFT_DISABLE_WAVE_OPS", "1"});
-            auto nowave = CompileModule(global.get(), targetFormat, mod, noWaveDefs, "_NoWaveOps");
-            for (auto& e : wave)   all.push_back(std::move(e));
-            for (auto& e : nowave) all.push_back(std::move(e));
-        }
-        else
-        {
-            auto compiled = CompileModule(global.get(), targetFormat, mod, defines, "");
-            for (auto& e : compiled) all.push_back(std::move(e));
-        }
+        std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
+
+        std::vector<CompiledEntryPoint> wave_ops = CompileModule(
+                                                        global.get(),
+                                                        module_path,
+                                                        defines,
+                                                        "_WaveOps");
+        // name something more classic C++ than the best way to move data between containers
+        // being using a statement this ugly and verbose. but hey, it is clear what it's doing!
+        all_entry_points.insert(
+            all_entry_points.end(),
+            std::make_move_iterator(wave_ops.begin()),
+            std::make_move_iterator(wave_ops.end()));
+
+        std::vector<Macro> noWaveDefs = defines;
+        noWaveDefs.push_back({"OCEAN_FFT_DISABLE_WAVE_OPS", "1"});
+        std::vector<CompiledEntryPoint> nowave_wgsl = CompileModule(
+                                                        global.get(),
+                                                        module_path,
+                                                        noWaveDefs,
+                                                        "_NoWaveOps");
+
+        all_entry_points.insert(
+            all_entry_points.end(),
+            std::make_move_iterator(nowave_wgsl.begin()),
+            std::make_move_iterator(nowave_wgsl.end()));
+
     }
 
-    if (all.empty())
+    if (all_entry_points.empty())
     {
         std::cerr << "no entrypoints compiled\n";
         return 1;
     }
 
-    WriteHeader(targetFormat, all, outputPath);
+    WriteHeader(all_entry_points, outputPath);
     return 0;
 }
