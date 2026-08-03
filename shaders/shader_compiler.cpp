@@ -37,27 +37,17 @@ struct Macro
     std::string val;
 };
 
-// as in code type, not vert/frag/compute etc
-enum class EntryPointType : uint8_t
-{
-    Invalid = 0,
-    WGSL,
-    SPIRV,
-};
-
 struct CompiledEntryPoint
 {
-    EntryPointType type{ EntryPointType::Invalid };
     std::string name;
     std::string suffix;
-    std::variant<std::string, std::vector<uint32_t>> code;
+    std::string code;
 };
 
 // Add compile options from command line invocations
 static std::vector<slang::CompilerOptionEntry> s_CompileOptions;
 constexpr static const char* k_allWarningsAsErrorsStr = "all";
 constexpr static SlangInt k_WgslTargetIndex = 0;
-constexpr static SlangInt k_SpirvTargetIndex = 1;
 
 void AddDefaultCompileOptions()
 {
@@ -104,16 +94,8 @@ static std::string SlangBlobToStr(slang::IBlob* b)
 
 static Slang::ComPtr<slang::ISession> MakeSlangSession(
     slang::IGlobalSession* global,
-    std::span<const Macro> macros,
     std::span<const std::string> searchPaths)
 {
-    std::vector<slang::PreprocessorMacroDesc> mds;
-    mds.reserve(macros.size());
-    for (const Macro& m : macros)
-    {
-        mds.push_back({m.key.c_str(), m.val.c_str()});
-    }
-
     std::vector<const char*> paths;
     paths.reserve(searchPaths.size());
     for (const std::string& p : searchPaths)
@@ -124,18 +106,16 @@ static Slang::ComPtr<slang::ISession> MakeSlangSession(
     slang::TargetDesc td{};
     td.format = SlangCompileTarget::SLANG_WGSL;
     td.profile = global->findProfile("spirv_1_6");
-    slang::TargetDesc td_spirv{};
-    td_spirv.format = SlangCompileTarget::SLANG_WGSL_SPIRV;
-    td_spirv.profile = global->findProfile("spirv_1_6");
-    const std::vector<slang::TargetDesc> targets = {td, td_spirv};
+    const std::vector<slang::TargetDesc> targets = {td};
 
     slang::SessionDesc sd{};
-    sd.targets          = targets.data();
-    sd.targetCount      = static_cast<SlangInt>(targets.size());
-    sd.preprocessorMacros      = mds.data();
-    sd.preprocessorMacroCount  = static_cast<SlangInt>(mds.size());
-    sd.searchPaths      = paths.data();
-    sd.searchPathCount  = static_cast<SlangInt>(paths.size());
+    sd.targets                  = targets.data();
+    sd.targetCount              = static_cast<SlangInt>(targets.size());
+    sd.preprocessorMacros       = nullptr;
+    sd.preprocessorMacroCount   = 0;
+    sd.searchPaths              = paths.data();
+    sd.searchPathCount          = static_cast<SlangInt>(paths.size());
+
     if (!s_CompileOptions.empty())
     {
         sd.compilerOptionEntries = s_CompileOptions.data();
@@ -172,35 +152,12 @@ std::string ExtractEntryPointBytecodeWGSL(Slang::ComPtr<slang::IComponentType> p
     return SlangBlobToStr(codeBlob.get());
 }
 
-std::vector<uint32_t> ExtractEntryPointBytecodeSPIRV(Slang::ComPtr<slang::IComponentType> program_pointer, SlangInt entryPointIndex)
-{
-    Slang::ComPtr<slang::IBlob> codeBlob;
-    Slang::ComPtr<slang::IBlob> diag;
-    if (SLANG_FAILED(program_pointer->getEntryPointCode(entryPointIndex, k_SpirvTargetIndex, codeBlob.writeRef(), diag.writeRef())))
-    {
-        std::println(stderr, "[shader_compiler] ExtractEntryPointBytecodeSPIRV({}) failed\n", entryPointIndex);
-        if (diag && diag->getBufferSize())
-        {
-            std::println(stderr, "[shader_compiler] Diagnostics: {}\n", SlangBlobToStr(diag.get()));
-        }
-        return {};
-    }
-    // is this valid.... i think they store their spir-v as bytes....
-    const uint32_t* data = reinterpret_cast<const uint32_t*>(codeBlob->getBufferPointer());
-    size_t size = codeBlob->getBufferSize() / sizeof(uint32_t);
-    return std::vector<uint32_t>(data, data + size);
-}
-
-static std::vector<CompiledEntryPoint> CompileModule(
-    slang::IGlobalSession* global,
-    const fs::path& modPath,
-    std::span<const Macro> macros,
-    std::string_view suffix)
+static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* global, const fs::path& modPath)
 {
     std::vector<std::string> searchPaths = {modPath.parent_path().string()};
     std::string stem = modPath.stem().string();
 
-    Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, macros, searchPaths);
+    Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, searchPaths);
     if (!session)
     {
         std::println(stderr, "[shader_compiler] session init failed for {}\n", stem);
@@ -265,25 +222,6 @@ static std::vector<CompiledEntryPoint> CompileModule(
         return {};
     }
 
-    // now we can go through and individually get the code for each entrypoint, and store it in our results vector
-    std::vector<CompiledEntryPoint> results; results.reserve(epCount * 2); // each entrypoint has a WGSL and SPIR-V variant
-    for (const auto&[i, name] : entryPointNames)
-    {
-        CompiledEntryPoint wgsl{};
-        wgsl.name = name;
-        wgsl.suffix = std::string(suffix) + "_WGSL";
-        wgsl.type = EntryPointType::WGSL;
-        wgsl.code = ExtractEntryPointBytecodeWGSL(linked, i);
-        results.push_back(std::move(wgsl));
-
-        CompiledEntryPoint spirv{};
-        spirv.name = name;
-        spirv.suffix = std::string(suffix) + "_SPIRV";
-        spirv.type = EntryPointType::SPIRV;
-        spirv.code = ExtractEntryPointBytecodeSPIRV(linked, i);
-        results.push_back(std::move(spirv));
-    }
-
 
     return results;
 }
@@ -338,37 +276,9 @@ static void WriteHeader(
          "#include <string_view>\n\n"
          "namespace OceanFFT::Shaders\n{\n\n";
 
-    // sort the shaders array - split it into two vectors. use std::ranges::partition since thats neat and fun and new to me
-    std::vector<CompiledEntryPoint> wgsl_shaders(shaders.size() / 2);
-    std::vector<CompiledEntryPoint> spirv_shaders(shaders.size() / 2);
-    auto sort_predicate = [](const CompiledEntryPoint& shader) { return shader.type == EntryPointType::WGSL; };
-    auto result = std::ranges::partition_copy(shaders, wgsl_shaders.begin(), spirv_shaders.begin(), sort_predicate);
-
-    for (const CompiledEntryPoint& shader : wgsl_shaders)
+    for (const CompiledEntryPoint& shader : shaders)
     {
-        f << WriteWgslShaderSourceToCppArray(std::get<std::string>(shader.code), GetShaderCodeArrayName(shader.name, shader.suffix));
-    }
-
-    for (const CompiledEntryPoint& shader : spirv_shaders)
-    {
-        f << "#if !defined(__EMSCRIPTEN__)\n\n";
-        f << "inline constexpr std::array<uint32_t, " << std::get<std::vector<uint32_t>>(shader.code).size() << "> "
-          << GetShaderCodeArrayName(shader.name, shader.suffix) << " = {";
-        const std::vector<uint32_t>& data = std::get<std::vector<uint32_t>>(shader.code);
-        for (size_t i = 0; i < data.size(); ++i)
-        {
-            f << data[i];
-            if (i + 1 < data.size())
-            {
-                f << ", ";
-            }
-            if ((i + 1) % 8 == 0)
-            {
-                f << "\n";
-            }
-        }
-        f << "};\n\n";
-        f << "#endif // !defined(__EMSCRIPTEN__)\n\n";
+        f << WriteWgslShaderSourceToCppArray(shader.code, GetShaderCodeArrayName(shader.name, shader.suffix));
     }
 
     f << "} // namespace OceanFFT::Shaders\n";
@@ -392,26 +302,6 @@ int main(int argc, char** argv)
         if ((arg == "--output" || arg == "-o") && i + 1 < argc)
         {
             outputPath = argv[++i];
-        }
-        else if (arg == "--wave-variants")
-        {
-            waveVariants = true;
-        }
-        else if ((arg == "--define" || arg == "-D") && i + 1 < argc)
-        {
-            std::string def{argv[++i]};
-            auto eq = def.find('=');
-            defines.push_back(eq != std::string::npos
-                ? Macro{def.substr(0, eq), def.substr(eq + 1)}
-                : Macro{def, "1"});
-        }
-        else if (arg.starts_with("-D") && arg.size() > 2)
-        {
-            std::string def{arg.substr(2)};
-            auto eq = def.find('=');
-            defines.push_back(eq != std::string::npos
-                ? Macro{def.substr(0, eq), def.substr(eq + 1)}
-                : Macro{def, "1"});
         }
         else if (arg.starts_with("--O"))
         {
@@ -462,7 +352,7 @@ int main(int argc, char** argv)
     if (outputPath.empty() || modulePaths.empty())
     {
         std::cerr << "Usage: OceanShaderCompiler --output <header.hpp>"
-                     " [--wave-variants] [--define K[=V]]..."
+                     " [-O<level>]..."
                      " <module.slang>...\n";
         return 1;
     }
@@ -471,36 +361,10 @@ int main(int argc, char** argv)
     slang::createGlobalSession(global.writeRef());
 
     std::vector<CompiledEntryPoint> all_entry_points;
-    all_entry_points.reserve(64); // too much but w/e
     for (auto& module_path : modulePaths)
     {
         std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
-
-        std::vector<CompiledEntryPoint> wave_ops = CompileModule(
-                                                        global.get(),
-                                                        module_path,
-                                                        defines,
-                                                        "_WaveOps");
-        // name something more classic C++ than the best way to move data between containers
-        // being using a statement this ugly and verbose. but hey, it is clear what it's doing!
-        all_entry_points.insert(
-            all_entry_points.end(),
-            std::make_move_iterator(wave_ops.begin()),
-            std::make_move_iterator(wave_ops.end()));
-
-        std::vector<Macro> noWaveDefs = defines;
-        noWaveDefs.push_back({"OCEAN_FFT_DISABLE_WAVE_OPS", "1"});
-        std::vector<CompiledEntryPoint> nowave_wgsl = CompileModule(
-                                                        global.get(),
-                                                        module_path,
-                                                        noWaveDefs,
-                                                        "_NoWaveOps");
-
-        all_entry_points.insert(
-            all_entry_points.end(),
-            std::make_move_iterator(nowave_wgsl.begin()),
-            std::make_move_iterator(nowave_wgsl.end()));
-
+        std::vector<CompiledEntryPoint> all_entry_points = CompileModule(global.get(), module_path);
     }
 
     if (all_entry_points.empty())
