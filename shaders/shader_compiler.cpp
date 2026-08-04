@@ -80,16 +80,16 @@ namespace PermutationParameters
                                        std::is_same_v<T, int32_t>)
                     {
                         return std::to_string(v);
-                    } 
+                    }
                 };
             return std::visit(visitor, value);
         }
-        
+
     private:
 
         std::string heldTypeStr() const noexcept
         {
-            auto visitor = 
+            auto visitor =
                 [](const auto& v) -> std::string
                 {
                     using T = std::decay_t<decltype(v)>;
@@ -626,7 +626,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // now search entrypoints and dedupe: we can point multiple entrypoint variants to 
+    // now search entrypoints and dedupe: we can point multiple entrypoint variants to
     // the same source, but shouldn't have duplicate source in the header
 
     WriteHeader(all_entry_points, outputPath);
