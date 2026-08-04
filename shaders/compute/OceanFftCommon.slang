@@ -30,6 +30,7 @@ internal const static half FFT_RADIX4_SCALE_FACTOR = 0.25h;
 internal const static uint FFT_COMMON_BIND_LOC = 0;
 internal const static uint FFT_RADIX2_BIND_LOC = 1;
 internal const static uint FFT_RADIX4_BIND_LOC = 2;
+internal const static uint FFT_PERMUTE_BIND_LOC = 3;
 
 public struct SpectrumParameters
 {

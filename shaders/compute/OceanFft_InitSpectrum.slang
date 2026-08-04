@@ -72,7 +72,7 @@ internal float CascadeContribution(in float k, in uint cascade, in uniform Casca
     else
     {
         float total = 0.0f;
-        for (uint i = 0; i < NUM_WAVE_CASCADES; ++i)
+        for (uint i = 0; i < FFT_NUM_WAVE_CASCADES; ++i)
         {
             bool kInRange = (k >= cascadeParams.CutoffsLow[i] && k <= cascadeParams.CutoffsHigh[i]);
             if (kInRange)

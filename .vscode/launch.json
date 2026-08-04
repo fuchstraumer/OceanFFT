@@ -5,11 +5,22 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Launch Shader Compiler [Release] (C++)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/shaders/Release/OceanShaderCompiler.exe",
+            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--O3", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "console": "externalTerminal"
+        },
+        {
             "name": "Launch Shader Compiler [RelWithDebInfo] (C++)",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/shaders/RelWithDebInfo/OceanShaderCompiler.exe",
-            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
+            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--O3", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],

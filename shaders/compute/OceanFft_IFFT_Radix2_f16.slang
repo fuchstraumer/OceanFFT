@@ -71,7 +71,7 @@ internal half4 DoIFFT_Radix2(in const uint threadIdx, in const half4 input)
     return pingPong ? s_SharedDataB[threadIdx] : s_SharedDataA[threadIdx];
 }
 
-[numthreads(FFT_SIZE, 1, 1)]
+[numthreads(FFT_SIZE, 1, 1)][WaveSize(FFT_WAVE_SIZE)]
 void Radix2_IFFT(
     in uint3 dispatchThreadId : SV_DispatchThreadID,
     in uint3 groupId : SV_GroupID)
@@ -93,14 +93,3 @@ void Radix2_IFFT(
     Radix2_IFFT_Input[linearizedIndex] = DoIFFT_Radix2(threadId, inputValue);
 }
 
-// apply checkerboard to the final output of the IFFT, to recenter it for rendering
-[numthreads(8, 8, 1)]
-void Radix2_IFFT_Permute(
-    in uint3 dispatchThreadId : SV_DispatchThreadID,
-    in uint3 groupId : SV_GroupID)
-{
-    uint linearizedIndex = FFT_SIZE * FFT_SIZE * dispatchThreadId.z + FFT_SIZE * dispatchThreadId.y + dispatchThreadId.x;
-    half4 value = Radix2_IFFT_Input[linearizedIndex];
-    value *= 1.0h - 2.0h * half4((dispatchThreadId.x + dispatchThreadId.y) % 2);
-    Radix2_IFFT_Input[linearizedIndex] = value;
-}

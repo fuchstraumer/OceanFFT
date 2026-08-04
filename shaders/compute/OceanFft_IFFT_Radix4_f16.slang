@@ -293,14 +293,3 @@ void Radix4_IFFT(
     half4 input = Radix4_IFFT_Input[linearizedIndex];
     Radix4_IFFT_Input[linearizedIndex] = DoIFFT_Radix4(threadIdx, input);
 }
-
-[numthreads(8,8,1)]
-void Radix4_IFFT_Permute(
-    in uint3 dispatchThreadId : SV_DispatchThreadID,
-    in uint3 groupID : SV_GroupID)
-{
-    uint linearizedIndex = FFT_SIZE * FFT_SIZE * dispatchThreadId.z + FFT_SIZE * dispatchThreadId.y + dispatchThreadId.x;
-    half4 value = Radix4_IFFT_Input[linearizedIndex];
-    value *= 1.0h - 2.0h * half4((dispatchThreadId.x + dispatchThreadId.y) % 2);
-    Radix4_IFFT_Input[linearizedIndex] = value;
-}

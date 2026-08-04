@@ -5,7 +5,7 @@
  *
  * Usage:
  *   OceanShaderCompiler --output <header.hpp> [--wave-variants]
- *                       [--define K[=V]]... <module.slang>...
+ *                       [--O[x]]... <module.slang>...
  * --O<n>: optimization level, 0-3, s, or z. If unspecified, defaults to 0 (no optimizations).
  *         this is probably the one to use, since we just feed this into Tint at runtime
  */
@@ -29,22 +29,168 @@
 #include <ranges>
 #include <algorithm>
 #include <expected>
+#include <chrono>
+#include <memory>
+#include <type_traits>
 
 namespace fs = std::filesystem;
 
-struct Macro
+namespace PermutationParameters
 {
-    std::string key;
-    std::string val;
-};
+    using Value = std::variant<bool, uint32_t, int32_t>;
+
+    struct Axis
+    {
+        std::string Name;
+        std::vector<Value> Values;
+        const Axis* Parent = nullptr;
+        Value ReqParentValueToEnable;
+    };
+
+    struct ValueStrBuilder
+    {
+        ValueStrBuilder(std::string_view _name, const Value& _value) : name(_name), value(_value) {}
+
+        std::string SourceStr() const noexcept
+        {
+            return std::format("export static const {} {} = {};\n", heldTypeStr(), name, HeldValueStr());
+        }
+
+        std::string ModuleNameStr() const noexcept
+        {
+            return std::format("{}_{}", name, HeldValueStr());
+        }
+
+        std::string ModulePathStr() const noexcept
+        {
+            return std::format("{}_{}.slang", name, HeldValueStr());
+        }
+
+        std::string HeldValueStr() const noexcept
+        {
+            auto visitor =
+                [](const auto& v) -> std::string
+                {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, bool>)
+                    {
+                        return v ? "true" : "false";
+                    }
+                    else if constexpr (std::is_same_v<T, uint32_t> ||
+                                       std::is_same_v<T, int32_t>)
+                    {
+                        return std::to_string(v);
+                    } 
+                };
+            return std::visit(visitor, value);
+        }
+        
+    private:
+
+        std::string heldTypeStr() const noexcept
+        {
+            auto visitor = 
+                [](const auto& v) -> std::string
+                {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, bool>)
+                    {
+                        return "bool";
+                    }
+                    else if constexpr (std::is_same_v<T, uint32_t>)
+                    {
+                        return "uint";
+                    }
+                    else if constexpr (std::is_same_v<T, int32_t>)
+                    {
+                        return "int";
+                    }
+                };
+            return std::visit(visitor, value);
+        }
+
+        const Value& value;
+        std::string_view name;
+
+    };
+
+    using Space = std::vector<const Axis*>;
+
+    constexpr static bool k_PrintAssignmentTraversal = true;
+
+    using Assignment = std::vector<std::pair<const Axis*, Value>>;
+    inline std::vector<Assignment> EnumerateActiveCombinations(const Space& space)
+    {
+        // start with one empty combination, so we can start expansion
+        std::vector<Assignment> partials{ Assignment{} };
+        for (const Axis* axis : space)
+        {
+            std::vector<Assignment> expanded;
+            expanded.reserve(partials.size() * axis->Values.size());
+            for (const auto& partial : partials)
+            {
+                if (axis->Parent)
+                {
+                    auto iter = std::find_if(partial.begin(), partial.end(),
+                                             [axis](const std::pair<const Axis*, Value>& p)
+                                             {
+                                                 return p.first == axis->Parent;
+                                             });
+
+                    assert(iter != partial.end() && "axis was declared before it's parent!");
+
+                    if (iter->second != axis->ReqParentValueToEnable)
+                    {
+                        // parent value doesn't match, so this axis is disabled for this partial
+                        expanded.push_back(partial);
+                        continue;
+                    }
+                }
+
+                for (const Value& val : axis->Values)
+                {
+                    Assignment next = partial;
+                    next.emplace_back(axis, val);
+                    expanded.push_back(std::move(next));
+                }
+            }
+
+            partials = std::move(expanded);
+        }
+
+        if constexpr (k_PrintAssignmentTraversal)
+        {
+            std::println("[shader_compiler] EnumerateActiveCombinations: {} combinations", partials.size());
+            for (const auto& assignment : partials)
+            {
+                std::string s;
+                for (const auto& [axis, value] : assignment)
+                {
+                    PermutationParameters::ValueStrBuilder builder(axis->Name, value);
+                    s += std::format("{}={}, ", axis->Name, builder.HeldValueStr());
+                }
+                std::println("[shader_compiler]   {}", s);
+            }
+        }
+
+        return partials;
+    }
+
+}
+
+const static PermutationParameters::Axis k_FftSizeParam{ "FFT_SIZE", {128u, 256u, 512u, 1024u, 2048u}, nullptr };
+const static PermutationParameters::Axis k_UseWaveOpsParam{ "FFT_USE_WAVE_OPS", {false, true}, nullptr };
+const static PermutationParameters::Axis k_WaveSizeParam{ "FFT_WAVE_SIZE", {32u, 64u, 128u}, &k_UseWaveOpsParam, true };
+const static PermutationParameters::Space k_IFFT_PermutationSpace{ &k_FftSizeParam, &k_UseWaveOpsParam, &k_WaveSizeParam };
 
 struct CompiledEntryPoint
 {
-    std::string name;
-    uint32_t fftSize;
-    uint32_t waveSize;
-    bool waveOps;
-    std::string code;
+    std::string Name;
+    // Axis = collection of potential values
+    // VariantParams - discrete collection of values for *this* entrypoint
+    std::vector<PermutationParameters::Value> VariantParams;
+    // Code should go in string view to dedupe it eventually
+    std::string Code;
 };
 
 // Add compile options from command line invocations
@@ -164,15 +310,34 @@ std::string ExtractEntryPointBytecodeWGSL(Slang::ComPtr<slang::IComponentType> p
     return SlangBlobToStr(codeBlob.get());
 }
 
+// we intentiontally take `components` by value since we mutate it per variant, but at the top level we fill it
+// with the core module and the entrypoints
 std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> CompileModuleVariant(
     Slang::ComPtr<slang::ISession> session,
     std::vector<slang::IComponentType*> components,
     SlangInt entryPointCount,
-    std::unordered_map<SlangInt, std::string> entryPointNames,
-    uint32_t fftSize,
-    uint32_t waveSize,
-    bool waveOps)
+    const std::unordered_map<SlangInt, std::string>& entryPointNames,
+    const PermutationParameters::Assignment& variantParams)
 {
+    // create variant "modules"
+    for (const auto& [axis, value] : variantParams)
+    {
+        PermutationParameters::ValueStrBuilder builder(axis->Name, value);
+        std::string moduleName = builder.ModuleNameStr();
+        std::string moduleSource = builder.SourceStr();
+        std::string modulePath = builder.ModulePathStr();
+        Slang::ComPtr<slang::IBlob> diag;
+        // wait, how do we dispose of these modules? is slang tracking them internally?
+        slang::IModule* variantModule = session->loadModuleFromSourceString(moduleName.c_str(), modulePath.c_str(), moduleSource.c_str(), diag.writeRef());
+
+        if (!variantModule)
+        {
+            return std::unexpected(diag);
+        }
+
+        components.emplace_back(variantModule);
+    }
+
     Slang::ComPtr<slang::IBlob> diag;
     Slang::ComPtr<slang::IComponentType> program;
     session->createCompositeComponentType(components.data(),
@@ -189,8 +354,13 @@ std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> Comp
         return std::unexpected(diag);
     }
 
-    std::vector<CompiledEntryPoint> results(static_cast<size_t>(entryPointCount),
-                                            CompiledEntryPoint{ {}, fftSize, waveSize, waveOps, {} });
+    std::vector<CompiledEntryPoint> results(static_cast<size_t>(entryPointCount), CompiledEntryPoint{});
+    // construct vector of just the parameter values for this variant, since each variant stores it
+    std::vector<PermutationParameters::Value> variantValues;
+    for (const auto& [axis, value] : variantParams)
+    {
+        variantValues.emplace_back(value);
+    }
 
     for (SlangInt i = 0; i < entryPointCount; ++i)
     {
@@ -200,9 +370,23 @@ std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> Comp
             return std::unexpected(diag);
         }
 
-        results[static_cast<size_t>(i)].name = entryPointNames[i];
-        results[static_cast<size_t>(i)].code = std::move(wgslCode);
+        results[static_cast<size_t>(i)].Name = entryPointNames.at(i);
+        results[static_cast<size_t>(i)].VariantParams = variantValues;
+        results[static_cast<size_t>(i)].Code = std::move(wgslCode);
     }
+
+    auto variantPrinter = [&variantParams]()
+    {
+        std::string s;
+        for (const auto& [axis, value] : variantParams)
+        {
+            PermutationParameters::ValueStrBuilder builder(axis->Name, value);
+            s += std::format("{}={}, ", axis->Name, builder.HeldValueStr());
+        }
+        return s;
+    };
+
+    std::println(stderr, "[shader_compiler] compiled variant with values: {}", variantPrinter());
 
     return results;
 }
@@ -211,7 +395,7 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
 {
     std::vector<std::string> searchPaths = {modPath.parent_path().string()};
     std::string stem = modPath.stem().string();
-
+    std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
     Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, searchPaths);
     if (!session)
     {
@@ -233,9 +417,10 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
         std::println(stderr, "[shader_compiler] loadModule warnings: {}", SlangBlobToStr(diag.get()));
     }
 
-    // gather all entrypoints: primitive approach is to compile and link these one by one, but we can
-    // actually do a single link and then query the entrypoints from the module. this is a bit more efficient,
-    // and also allows us to get the entrypoint names for free. (DiamondDogs does this)
+    // init the components vector with the core module, which is the first component in the composite
+    std::vector<slang::IComponentType*> components;
+    components.emplace_back(mod);
+
     const SlangInt epCount = mod->getDefinedEntryPointCount();
     std::vector<Slang::ComPtr<slang::IEntryPoint>> entryPoints(epCount);
     // annoying thing: entrypoints are accessed by index after linking, but we can only get the names before linking, so we
@@ -252,7 +437,7 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
 
         assert(!entryPointNames.contains(i));
         entryPointNames[i] = ep->getFunctionReflection()->getName();
-        entryPoints[i] = std::move(ep);
+        components.emplace_back(ep.get());
     }
 
     // print names of found entrypoints in module, just for sanity check / debugging
@@ -262,107 +447,34 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
         std::println(stderr, "[shader_compiler]   {}: {}", i, entryPointNames[i]);
     }
 
-    // create arrays of "module" strings that will be used to specialize the entrypoints
-    auto makeFftSizeSrc = [](uint32_t fftSize)->std::string
-    {
-        return std::format("export static const int FFT_SIZE = {};\n", fftSize);
-    };
-
-    auto makeWaveSizeSrc = [](uint32_t waveSize)->std::string
-    {
-        return std::format("export static const int FFT_WAVE_SIZE = {};\n", waveSize);
-    };
-
-    auto makeWaveOpsSrc = [](bool waveOps)->std::string
-    {
-        return std::format("export static const bool FFT_USE_WAVE_OPS = {};\n", waveOps ? "true" : "false");
-    };
-
-    const size_t fftSizeRange[] = {128, 256, 512, 1024};
-    const uint32_t waveSizeRange[] = {32, 64, 128};
-    const bool waveOpsRange[] = {false, true};
-
     std::vector<CompiledEntryPoint> results;
 
-    // hold on to your seats.... I apologize for this. I am actually sorry.
-    size_t totalVariants = epCount * std::size(fftSizeRange) * std::size(waveSizeRange) * std::size(waveOpsRange);
-    results.reserve(totalVariants);
-    std::println(stderr, "[shader_compiler] compiling {} entrypoints with {} fft sizes, {} wave sizes, {} wave ops variants -> {} total variants",
-                 epCount, std::size(fftSizeRange), std::size(waveSizeRange), std::size(waveOpsRange), totalVariants);
-    
-    for (uint32_t fftSize : fftSizeRange)
+    // in the future, we'll have a better way to do this per module, but I really need to get moving in this project
+    // so im hardcoding this. everything else I've done is generic and reusable, at least!
+    // the real question will be, do we sort the space axes by dependencies, or just hardcode that too? lol
+    auto curr_variant_space = k_IFFT_PermutationSpace;
+    auto assignments = PermutationParameters::EnumerateActiveCombinations(curr_variant_space);
+    for (const auto& assignment : assignments)
     {
-        std::string fftSizeStr = makeFftSizeSrc(fftSize);
-        std::string fftSizeModuleName = std::format("fft_size_module_{}", fftSize);
-        std::string fftSizeModulePath = std::format("fft_size_module_{}.slang", fftSize);
-        slang::IModule* fftSizeModule = session->loadModuleFromSourceString(fftSizeModuleName.c_str(),
-                                                                            fftSizeModulePath.c_str(),
-                                                                            fftSizeStr.c_str(),
-                                                                            diag.writeRef());
 
-        for (uint32_t waveSize : waveSizeRange)
+        auto compileResult = CompileModuleVariant(session, components, epCount, entryPointNames, assignment);
+        if (!compileResult)
         {
-            std::string waveSizeStr = makeWaveSizeSrc(waveSize);
-            std::string waveSizeModuleName = std::format("wave_size_module_{}", waveSize);
-            std::string waveSizeModulePath = std::format("wave_size_module_{}.slang", waveSize);
-            slang::IModule* waveSizeModule = session->loadModuleFromSourceString(waveSizeModuleName.c_str(),
-                                                                                 waveSizeModulePath.c_str(),
-                                                                                 waveSizeStr.c_str(),
-                                                                                 diag.writeRef());
-
-            for (bool waveOps : waveOpsRange)
-            {
-                std::string waveOpsStr = makeWaveOpsSrc(waveOps);
-                std::string waveOpsModuleName = std::format("wave_ops_module_{}", waveOps ? "true" : "false");
-                std::string waveOpsModulePath = std::format("wave_ops_module_{}.slang", waveOps ? "true" : "false");
-                slang::IModule* waveOpsModule = session->loadModuleFromSourceString(waveOpsModuleName.c_str(),
-                                                                                    waveOpsModulePath.c_str(),
-                                                                                    waveOpsStr.c_str(),
-                                                                                    diag.writeRef());
-
-                std::string paramsStr = std::format(
-                    "FFT_SIZE={} FFT_WAVE_SIZE={} FFT_USE_WAVE_OPS={}",
-                    fftSize, waveSize, waveOps);
-                std::println(stderr, "[shader_compiler] compiling module {} with {}",
-                             stem, paramsStr);
-
-                std::vector<slang::IComponentType*> components = {fftSizeModule, waveSizeModule, waveOpsModule, mod};
-                // now add entrypoints to the component list, so we can link them all together
-                for (SlangInt i = 0; i < epCount; ++i)
-                {
-                    components.push_back(entryPoints[i].get());
-                }
-
-                auto variant_results = CompileModuleVariant(session,
-                                                            components, epCount,
-                                                            entryPointNames, fftSize,
-                                                            waveSize, waveOps);
-                if (!variant_results)
-                {
-                    auto inner_diag = variant_results.error();
-                    std::println(stderr, "[shader_compiler] compileModuleVariant failed for {} with {}",
-                                 stem, paramsStr);
-                    if (diag && diag->getBufferSize())
-                    {
-                        std::println(stderr, "[shader_compiler] Diagnostics: {}", SlangBlobToStr(diag.get()));
-                    }
-                    continue;
-                }
-                else
-                {
-                    std::println(stderr, "[shader_compiler] compileModuleVariant succeeded for {} with {}",
-                                 stem, paramsStr);
-                    auto& variant_entry_points = variant_results.value();
-                    results.insert(results.end(),
-                                   std::make_move_iterator(variant_entry_points.begin()),
-                                   std::make_move_iterator(variant_entry_points.end()));
-                }
-
-            }
+            std::println(stderr, "[shader_compiler] CompileModuleVariant failed for module {}: {}", stem, SlangBlobToStr(compileResult.error().get()));
+            continue;
         }
-    }
-    std::println(stderr, "[shader_compiler] compiled {} entrypoints for module {}", results.size(), stem);
 
+        auto& compiledEntryPoints = compileResult.value();
+        results.insert(results.end(),
+                       std::make_move_iterator(compiledEntryPoints.begin()),
+                       std::make_move_iterator(compiledEntryPoints.end()));
+    }
+
+    std::chrono::steady_clock::time_point endTime = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsedTime = endTime - startTime;
+    // cast elapsed time to milliseconds for easier reading
+    std::chrono::duration<double, std::milli> elapsedTimeMs = elapsedTime;
+    std::println(stderr, "[shader_compiler] compiled {} entrypoints for module {} in {}ms", results.size(), stem, elapsedTimeMs.count());
     return results;
 }
 
@@ -418,23 +530,20 @@ static void WriteHeader(
 
     for (const CompiledEntryPoint& shader : shaders)
     {
-        const std::string shaderSuffix = std::format("_fft{}_wave{}_ops{}", shader.fftSize, shader.waveSize, shader.waveOps);
-        f << WriteWgslShaderSourceToCppArray(shader.code, GetShaderCodeArrayName(shader.name, shaderSuffix));
+        //const std::string shaderSuffix = std::format("_fft{}_wave{}_ops{}", shader.fftSize, shader.waveSize, shader.waveOps);
+        //f << WriteWgslShaderSourceToCppArray(shader.code, GetShaderCodeArrayName(shader.name, shaderSuffix));
     }
 
     f << "} // namespace OceanFFT::Shaders\n";
     f.close();
 
-    std::println(stderr, "wrote {} entrypoints -> {}", shaders.size(), outPath.string());
+    std::println(stderr, "[shader_compiler] wrote {} shader variants to {}", shaders.size(), outPath.string());
 }
 
 int main(int argc, char** argv)
 {
     fs::path outputPath;
     std::vector<fs::path> modulePaths;
-    std::vector<Macro> defines;
-    bool waveVariants = false;
-
     AddDefaultCompileOptions();
 
     for (int i = 1; i < argc; ++i)
@@ -516,6 +625,9 @@ int main(int argc, char** argv)
         std::cerr << "no entrypoints compiled\n";
         return 1;
     }
+
+    // now search entrypoints and dedupe: we can point multiple entrypoint variants to 
+    // the same source, but shouldn't have duplicate source in the header
 
     WriteHeader(all_entry_points, outputPath);
     return 0;
