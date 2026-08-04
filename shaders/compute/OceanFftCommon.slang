@@ -84,12 +84,12 @@ internal half2 ComplexExp(in half x)
 // RGA shows F32 ops showing up only around this function, so this should help knock those into f16
 internal half2 ComplexExp(in const uint log2GroupSize, in const uint j, in const uint tapIndex)
 {
-    const float fftSizeInv = 1.0f / float(FFT_SIZE);
+    const float fftSizeInv = 1.0f / float(IFFT_SIZE);
     const uint mask = (1u << log2GroupSize) - 1u;
-    const uint p = (j * tapIndex & mask) << (FFT_LOG2_SIZE - log2GroupSize);
+    const uint p = (j * tapIndex & mask) << (IFFT_LOG2_SIZE - log2GroupSize);
     const float uCoord = (float(p) + 0.5f) * fftSizeInv;
     // texture has y coord pre-conjugated, so one less mul as well
-    return FFT_SinCos_LUT.SampleLevel(FFT_LUT_Sampler, uCoord, 0.0f);
+    return IfftSinCosLUT.SampleLevel(IfftLUTSampler, uCoord, 0.0f);
 }
 
 internal float2 ComplexMul(in float2 a, in float2 b)
@@ -177,5 +177,5 @@ internal half4 IfftRadix2WaveOpsStep(
     half4 a = isLow ? threadData : partnerData;
     half4 b = isLow ? partnerData : threadData;
     half4 rotated = half4(ComplexMul(phaseRotation, b.xy), ComplexMul(phaseRotation, b.zw));
-    return isLow ? (a + rotated) * FFT_RADIX2_SCALE_FACTOR : (a - rotated) * FFT_RADIX2_SCALE_FACTOR;
+    return isLow ? (a + rotated) * IFFT_RADIX2_SCALE_FACTOR : (a - rotated) * IFFT_RADIX2_SCALE_FACTOR;
 }
