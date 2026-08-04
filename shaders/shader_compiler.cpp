@@ -48,6 +48,11 @@ namespace PermutationParameters
         Value ReqParentValueToEnable;
     };
 
+    using Space = std::vector<const Axis*>;
+    using Assignment = std::vector<std::pair<const Axis*, Value>>;
+
+    constexpr static bool k_PrintAssignmentTraversal = true;
+
     struct ValueStrBuilder
     {
         ValueStrBuilder(std::string_view _name, const Value& _value) : name(_name), value(_value) {}
@@ -115,11 +120,6 @@ namespace PermutationParameters
 
     };
 
-    using Space = std::vector<const Axis*>;
-
-    constexpr static bool k_PrintAssignmentTraversal = true;
-
-    using Assignment = std::vector<std::pair<const Axis*, Value>>;
     inline std::vector<Assignment> EnumerateActiveCombinations(const Space& space)
     {
         // start with one empty combination, so we can start expansion
@@ -177,10 +177,9 @@ namespace PermutationParameters
         return partials;
     }
 
-
 }
 
-const static PermutationParameters::Axis k_FftSizeParam{ "FFT_SIZE", {128u, 256u, 512u, 1024u, 2048u}, nullptr };
+const static PermutationParameters::Axis k_FftSizeParam{ "FFT_SIZE", {128u, 256u, 512u, 1024u, 2048u, 4096u, 8192u}, nullptr };
 const static PermutationParameters::Axis k_UseWaveOpsParam{ "FFT_USE_WAVE_OPS", {false, true}, nullptr };
 const static PermutationParameters::Axis k_WaveSizeParam{ "FFT_WAVE_SIZE", {16u, 32u, 64u, 128u}, &k_UseWaveOpsParam, true };
 const static PermutationParameters::Space k_IFFT_PermutationSpace{ &k_FftSizeParam, &k_UseWaveOpsParam, &k_WaveSizeParam };
@@ -251,13 +250,8 @@ void AddDefaultCompileOptions()
     optFloatingPointMode.name = slang::CompilerOptionName::FloatingPointMode;
     optFloatingPointMode.value.intValue0 = static_cast<int32_t>(SlangFloatingPointMode::SLANG_FLOATING_POINT_MODE_FAST);
     s_CompileOptions.push_back(optFloatingPointMode);
-    // disabling debug info, we've tested these shaders in SlangPy using scripts/test_ifft.py.
-    // that's the nice thing about using Slang, at least - source modifications will carry here too
+    // disabling debug info, as it has a huge impact on quality of generated code in terms of perf and compactness
     slang::CompilerOptionEntry optDebugInfoLevel{};
-    optDebugInfoLevel.name = slang::CompilerOptionName::DebugInfoIncludeSource;
-    optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
-    optDebugInfoLevel.value.intValue0 = static_cast<int32_t>(false);
-    s_CompileOptions.push_back(optDebugInfoLevel);
     optDebugInfoLevel.name = slang::CompilerOptionName::DebugInformation;
     optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
     optDebugInfoLevel.value.intValue0 = SlangDebugInfoLevel::SLANG_DEBUG_INFO_LEVEL_NONE;
@@ -709,31 +703,29 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    for (size_t testRun = 0; testRun < 25; ++testRun)
+    Slang::ComPtr<slang::IGlobalSession> global;
+    slang::createGlobalSession(global.writeRef());
+
+    std::vector<CompiledEntryPoint> all_entry_points;
+    for (auto& module_path : modulePaths)
     {
-        Slang::ComPtr<slang::IGlobalSession> global;
-        slang::createGlobalSession(global.writeRef());
-
-        std::vector<CompiledEntryPoint> all_entry_points;
-        for (auto& module_path : modulePaths)
-        {
-            std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
-            auto entry_points = CompileModule(global.get(), module_path);
-            all_entry_points.insert(all_entry_points.end(),
-                std::make_move_iterator(entry_points.begin()),
-                std::make_move_iterator(entry_points.end()));
-        }
-
-        if (all_entry_points.empty())
-        {
-            std::cerr << "no entrypoints compiled\n";
-            return 1;
-        }
-
-        // now search entrypoints and dedupe: we can point multiple entrypoint variants to
-        // the same source, but shouldn't have duplicate source in the header
-
-        WriteHeader(all_entry_points, outputPath);
+        std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
+        auto entry_points = CompileModule(global.get(), module_path);
+        all_entry_points.insert(all_entry_points.end(),
+            std::make_move_iterator(entry_points.begin()),
+            std::make_move_iterator(entry_points.end()));
     }
+
+    if (all_entry_points.empty())
+    {
+        std::cerr << "no entrypoints compiled\n";
+        return 1;
+    }
+
+    // now search entrypoints and dedupe: we can point multiple entrypoint variants to
+    // the same source, but shouldn't have duplicate source in the header
+
+    WriteHeader(all_entry_points, outputPath);
+
     return 0;
 }
