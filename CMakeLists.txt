@@ -19,7 +19,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if (MSVC)
     # MP = helps with slang compile, bigobj = same deal, slang can break without this
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /Gy /arch:AVX2 /fp:fast")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /arch:AVX2")
 endif()
 
 
@@ -140,5 +140,8 @@ if (EMSCRIPTEN)
     set_target_properties(OceanFFT PROPERTIES SUFFIX ".html")
 else()
     target_link_libraries(OceanFFT PRIVATE webgpu_dawn glfw webgpu_glfw webgpu_cpp)
+    if (WIN32)
+        target_link_libraries(OceanFFT PRIVATE dawn_native)
+    endif()
     # similar link options locally
 endif()

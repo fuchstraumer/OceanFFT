@@ -168,7 +168,7 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
             else
             {
                 result_adapter = wgpu::Adapter{}; // ensure it's empty
-                std::println(stderr, "RequestAdapter failed: {}", std::string_view(message.data, message.length));
+                std::println(stderr, "[velox][context] RequestAdapter failed: {}", std::string_view(message.data, message.length));
             }
         });
 
@@ -213,7 +213,7 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
             else
             {
                 result_device = wgpu::Device{}; // ensure it's empty
-                std::println(stderr, "RequestDevice failed: {}", std::string_view(message.data, message.length));
+                std::println(stderr, "[velox][context] RequestDevice failed: {}", std::string_view(message.data, message.length));
             }
         });
 
@@ -351,7 +351,7 @@ wgpu::TextureView Context::AcquireNextFrame()
     case wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal:
         return surfaceTexture.texture.CreateView();
     case wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal:
-        std::println(stderr, "[velox][wgpu] Next frame acquisition returned SuccessSuboptimal");
+        std::println(stderr, "[velox][context] Next frame acquisition returned SuccessSuboptimal");
         return surfaceTexture.texture.CreateView();
     default:
         // todo: this should be a std::expected return
