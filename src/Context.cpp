@@ -10,6 +10,31 @@
 #include <unordered_map>
 #include <algorithm>
 
+#if !defined(__EMSCRIPTEN__) && defined(_WIN32)
+#undef APIENTRY
+#define WIN32_LEAN_AND_MEAN
+#include <dawn/native/DawnNative.h>
+#include <windows.h>
+// :( 
+std::string GetSystemDirectory()
+{
+    char buffer[MAX_PATH];
+    UINT result = GetSystemDirectoryA(buffer, MAX_PATH);
+    if (result == 0 || result > MAX_PATH)
+    {
+        std::println(stderr, "Failed to get system directory: {}", GetLastError());
+        return std::string{};
+    }
+    // path has to end with //, as dawn won't append it automatically lol
+    std::string strResult(buffer);
+    if (strResult.back() != '\\')
+    {
+        strResult += '\\';
+    }
+    return strResult;
+}
+#endif
+
 namespace
 {
     static const std::unordered_map<wgpu::ErrorType, std::string_view> ErrorTypeStrings
@@ -63,14 +88,10 @@ namespace velox
 #ifdef __EMSCRIPTEN__
 Context::Context(const ContextCreateInfo& createInfo)
 #else
-Context::Context(const ContextCreateInfo& createInfo, GLFWwindow* nativeWindow)
+Context::Context(const ContextCreateInfo& createInfo)
 #endif
 {
-    wgpu::InstanceDescriptor instanceDesc{};
 #ifndef __EMSCRIPTEN__
-    const wgpu::InstanceFeatureName requiredFeatures[] = { wgpu::InstanceFeatureName::TimedWaitAny };
-    instanceDesc.requiredFeatureCount = std::size(requiredFeatures);
-    instanceDesc.requiredFeatures = requiredFeatures;
     instance = ValidOrExit(requestInstance(createInfo));
 #endif
 
@@ -83,21 +104,38 @@ Context::Context(const ContextCreateInfo& createInfo, GLFWwindow* nativeWindow)
 #else
     // createnativewindow() also initializes glfw, mostly just to keep code tidy
     nativeWindow = ValidOrExit(createNativeWindow(createInfo));
-    surface = ValidOrExit(createSurface(createInfo, nativeWindow));
+    surface = ValidOrExit(createSurface(createInfo));
 #endif
 }
 
 Context::~Context()
 {
+#ifndef __EMSCRIPTEN__
     glfwDestroyWindow(nativeWindow);
     glfwTerminate();
+#endif
 }
 
 std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCreateInfo& createInfo)
 {
     wgpu::InstanceDescriptor instanceDesc{};
+    const wgpu::InstanceFeatureName requiredFeatures[] = { wgpu::InstanceFeatureName::TimedWaitAny };
+    instanceDesc.requiredFeatureCount = std::size(requiredFeatures);
+    instanceDesc.requiredFeatures = requiredFeatures;
+#if !defined(__EMSCRIPTEN__) && defined(_WIN32)
+    // as mentioned above, we want to make sure Dawn can find vulkan-1.dll on windows
+    // (only when we're compiling for Native on Win32, of course!)
+    std::string sys32Path = GetSystemDirectory();
+    const char* searchPaths[] = { sys32Path.c_str() };
+
+    dawn::native::DawnInstanceDescriptor dawnDescriptor{};
+    dawnDescriptor.additionalRuntimeSearchPathsCount = std::size(searchPaths);
+    dawnDescriptor.additionalRuntimeSearchPaths = searchPaths;
+    instanceDesc.nextInChain = &dawnDescriptor;
+#else
     instanceDesc.nextInChain = nullptr;
-    wgpu::Instance instance = wgpu::CreateInstance(&instanceDesc);
+#endif
+    instance = wgpu::CreateInstance(&instanceDesc);
     if (!instance)
     {
         return std::unexpected(RhiError::AdapterRequestFailed);
@@ -145,9 +183,6 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
 {
     wgpu::DeviceDescriptor deviceDesc{};
     deviceDesc.label = createInfo.ApplicationName;
-    // todo: consider how to auto-add things like timestamp query features for benchmarking
-    deviceDesc.requiredFeatureCount = createInfo.RequiredFeatures.size();
-    deviceDesc.requiredFeatures = createInfo.RequiredFeatures.data();
     deviceDesc.SetUncapturedErrorCallback(LogUncapturedError);
     deviceDesc.SetDeviceLostCallback(wgpu::CallbackMode::AllowSpontaneous, LogDeviceLost);
     // todo: leaving required limits blank clamps to minspec, which is fine for now. will have to assess this better in future
@@ -243,7 +278,7 @@ std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCr
 }
 
 
-std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& /*createInfo*/, GLFWwindow* nativeWindow)
+std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& /*createInfo*/)
 {
     // todo: this GLFW shim sets the descriptor based on GLFW hints, but for things like colorspaces this won't pass through
     // at least it didn't in DiamondDogs, not without a good bit of extra work
@@ -336,3 +371,4 @@ bool Context::HasFeature(wgpu::FeatureName feature) const noexcept
 }
 
 } // namespace velox
+

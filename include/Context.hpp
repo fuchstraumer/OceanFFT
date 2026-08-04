@@ -6,7 +6,7 @@
 #include <webgpu/webgpu_cpp.h>
 #include <cstdint>
 #include <string_view>
-#include <vector>
+#include <span>
 
 #ifndef __EMSCRIPTEN__
 struct GLFWwindow;
@@ -27,7 +27,7 @@ namespace velox
         uint32_t InitialHeight{ 600u };
         std::string_view ApplicationName{ "WebGPU App" };
         // This is for *device* features only
-        std::vector<wgpu::FeatureName> RequiredFeatures;
+        std::span<wgpu::FeatureName> RequiredFeatures;
         wgpu::FeatureLevel FeatureLevel{ wgpu::FeatureLevel::Core };
         wgpu::PowerPreference PowerPreference{ wgpu::PowerPreference::HighPerformance };
 
@@ -62,7 +62,7 @@ namespace velox
     #ifdef __EMSCRIPTEN__
         explicit Context(const ContextCreateInfo& createInfo);
     #else
-        Context(const ContextCreateInfo& createInfo, GLFWwindow* nativeWindow);
+        Context(const ContextCreateInfo& createInfo);
     #endif
         ~Context();
 
@@ -89,7 +89,7 @@ namespace velox
     #else
         // need to make sure a valid GLFWwindow* is created before we create the surface
         std::expected<GLFWwindow*, RhiError> createNativeWindow(const ContextCreateInfo& createInfo);
-        std::expected<wgpu::Surface, RhiError> createSurface(const ContextCreateInfo& createInfo, GLFWwindow* nativeWindow);
+        std::expected<wgpu::Surface, RhiError> createSurface(const ContextCreateInfo& createInfo);
     #endif
 
         void configureSurface(const ContextCreateInfo& createInfo);
