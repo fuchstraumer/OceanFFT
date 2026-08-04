@@ -1,36 +1,13 @@
 implementing OceanFft;
+__include OceanFftDims;
+__include OceanFftBindings;
 
+internal const static half IFFT_RADIX2_SCALE_FACTOR = 0.5h;
+internal const static half IFFT_RADIX4_SCALE_FACTOR = 0.25h;
 internal const static float OceanFft_PI = 3.1415926535897932384626433832795f;
 internal const static float OceanFft_2PI = 6.283185307179586476925286766559f;
 internal const static float OceanFft_G = 9.81f;
 internal const static float OceanFft_SigmaOverRho = 0.074e-3f; // surface tension over density of water
-
-internal const static uint FFT_SIZE_MIN = 256u;
-internal const static uint FFT_SIZE_REGULAR = 512u;
-internal const static uint FFT_SIZE_LARGE = 1024u;
-extern const static uint FFT_SIZE = 512u;
-// unlikely we define this one differently
-extern const static uint FFT_NUM_WAVE_CASCADES = 4u;
-// FFT_SIZE_MIN: 8, FFT_SIZE_REGULAR: 9, FFT_SIZE_LARGE: 10
-internal const static uint FFT_LOG2_SIZE = firstbithigh(FFT_SIZE);
-internal const static uint FFT_LOG4_SIZE = FFT_LOG2_SIZE / 2u;
-// get remainder so we know how many radix-2 stages we need after radix-4 stages
-internal const static uint FFT_LOG4_REMAINDER = FFT_LOG2_SIZE % 2u;
-// permutation parameter
-extern const static bool FFT_USE_WAVE_OPS = true;
-// permutation parameter - I will not use wave ops when size < 32u, but we will permute this as 32,64,128
-// surprising number of devices can do 128!
-extern const static uint FFT_WAVE_SIZE = 32u;
-// FFT_LOG2_WAVE_SIZE: 5, FFT_LOG4_WAVE_SIZE: 2
-internal const static uint FFT_LOG2_WAVE_SIZE = FFT_USE_WAVE_OPS ? firstbithigh(FFT_WAVE_SIZE) : 0u;
-internal const static uint FFT_LOG4_WAVE_SIZE = FFT_USE_WAVE_OPS ? 2u : 0u;
-internal const static half FFT_RADIX2_SCALE_FACTOR = 0.5h;
-internal const static half FFT_RADIX4_SCALE_FACTOR = 0.25h;
-
-internal const static uint FFT_COMMON_BIND_LOC = 0;
-internal const static uint FFT_RADIX2_BIND_LOC = 1;
-internal const static uint FFT_RADIX4_BIND_LOC = 2;
-internal const static uint FFT_PERMUTE_BIND_LOC = 3;
 
 public struct SpectrumParameters
 {
@@ -103,9 +80,6 @@ internal half2 ComplexExp(in half x)
     return result;
 }
 
-// LUT has to be 2D because WGSL does not like 1D textures. 
-[[vk::binding(FFT_COMMON_BIND_LOC, 0)]] uniform Texture1D<half2> FFT_SinCos_LUT;
-[[vk::binding(FFT_COMMON_BIND_LOC, 1)]] uniform SamplerState FFT_LUT_Sampler;
 // LUT-based complex exponential, allowing us to stay entirely in half precision pipe for IDFT math
 // RGA shows F32 ops showing up only around this function, so this should help knock those into f16
 internal half2 ComplexExp(in const uint log2GroupSize, in const uint j, in const uint tapIndex)
@@ -173,7 +147,7 @@ internal half2 ComplexDiv(in half2 a, in half2 b)
     return ComplexMul(a, ComplexConj(b)) * denom.xx;
 }
 
-internal half2 Radix2PhaseRotation(
+internal half2 IfftRadix2PhaseRotation(
     in const uint threadIdx,
     in const uint stage)
 {
@@ -186,7 +160,7 @@ internal half2 Radix2PhaseRotation(
     return phaseRotation;
 }
 
-internal half4 IFFT_WaveOpsRadix2Step(
+internal half4 IfftRadix2WaveOpsStep(
     in half4 threadData,
     in const uint threadIdx,
     in const uint stage)

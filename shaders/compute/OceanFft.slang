@@ -1,5 +1,7 @@
 module OceanFft;
 
+__include OceanFftDims;
+__include OceanFftBindings;
 __include OceanFftCommon;
 __include Spectra;
 __include IfftRadix2_f16;
