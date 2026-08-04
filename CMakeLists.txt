@@ -19,7 +19,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 if (MSVC)
     # MP = helps with slang compile, bigobj = same deal, slang can break without this
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /arch:AVX2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /arch:AVX2 /Gy")
 endif()
 
 
@@ -38,6 +38,11 @@ organize_slang_targets()
 
 include(cmake/ConfigureDawn.cmake)
 add_subdirectory(third_party/dawn EXCLUDE_FROM_ALL)
+
+set(MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF)
+set(MAGIC_ENUM_OPT_BUILD_TESTS OFF)
+set(MAGIC_ENUM_OPT_INSTALL OFF)
+add_subdirectory(third_party/magic_enum)
 
 if(NOT EMSCRIPTEN)
     add_subdirectory(shaders)
@@ -141,7 +146,7 @@ if (EMSCRIPTEN)
 else()
     target_link_libraries(OceanFFT PRIVATE webgpu_dawn glfw webgpu_glfw webgpu_cpp)
     if (WIN32)
-        target_link_libraries(OceanFFT PRIVATE dawn_native)
+        target_link_libraries(OceanFFT PRIVATE dawn_native magic_enum::magic_enum)
     endif()
     # similar link options locally
 endif()
