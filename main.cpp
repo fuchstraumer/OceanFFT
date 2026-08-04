@@ -17,6 +17,7 @@ int main()
     createInfo.RequiredFeatures = requestedFeaturesSpan;
     createInfo.FeatureLevel = wgpu::FeatureLevel::Compatibility;
     createInfo.PowerPreference = wgpu::PowerPreference::HighPerformance;
+    createInfo.PreferredSurfaceFormat = wgpu::TextureFormat::RGB10A2Unorm;
     
     Context context(createInfo);
     

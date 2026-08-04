@@ -9,6 +9,7 @@
 #endif
 #include <unordered_map>
 #include <algorithm>
+#include "magic_enum/magic_enum.hpp"
 
 #if !defined(__EMSCRIPTEN__) && defined(_WIN32)
 #undef APIENTRY
@@ -49,7 +50,7 @@ namespace
     static const std::unordered_map<wgpu::DeviceLostReason, std::string_view> DeviceLostReasonStrings
     {
         { wgpu::DeviceLostReason::Unknown, "Unknown" },
-        { wgpu::DeviceLostReason::Destroyed, "Destroyed" },
+        { wgpu::DeviceLostReason::Destroyed, "Destroyed (Routine shutdown)" },
         { wgpu::DeviceLostReason::CallbackCancelled, "Callback Cancelled" },
         { wgpu::DeviceLostReason::FailedCreation, "Creation Failed" }
     };
@@ -98,6 +99,13 @@ Context::Context(const ContextCreateInfo& createInfo)
     adapter = ValidOrExit(requestAdapter(createInfo));
     device = ValidOrExit(requestDevice(createInfo));
     queue = device.GetQueue();
+    std::println(stderr, "[velox][context] Instance, Adapter, and Device online");
+    std::string enabledFeatureNames;
+    for (const auto& feature : createInfo.RequiredFeatures)
+    {
+        enabledFeatureNames += std::format(" {} |", magic_enum::enum_name(feature));
+    }
+    std::println(stderr, "[velox][context] Device enabled features:{}", enabledFeatureNames);
 
 #ifdef __EMSCRIPTEN__
     surface = ValidOrExit(createSurface(createInfo));
@@ -106,6 +114,7 @@ Context::Context(const ContextCreateInfo& createInfo)
     nativeWindow = ValidOrExit(createNativeWindow(createInfo));
     surface = ValidOrExit(createSurface(createInfo));
 #endif
+    configureSurface(createInfo);
 }
 
 Context::~Context()
@@ -202,7 +211,6 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
     }
 
     wgpu::Device result_device;
-
     wgpu::Future future = adapter.RequestDevice(&deviceDesc, wgpu::CallbackMode::WaitAnyOnly,
         [&result_device](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message)
         {
@@ -304,11 +312,22 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
         { 
             return format == createInfo.PreferredSurfaceFormat;
         };
-    // traverse array of caps and use std::find_if to find the first format
-    // that matches our preferred format. then we go on to guessing. heuristically. :)
     auto format_iter = std::find_if(capabilities.formats,
                                     capabilities.formats + capabilities.formatCount,
                                     format_match);
+    if (format_iter != capabilities.formats + capabilities.formatCount)
+    {
+        surfaceFormat = *format_iter;
+        std::println(stderr, "[velox][context] Using preferred surface format {}", magic_enum::enum_name(surfaceFormat));
+    }
+    else
+    {
+        // if we can't find our preferred format, just pick the first one the surface supports
+        surfaceFormat = capabilities.formats[0];
+        std::println(stderr, "[velox][context] Preferred surface format {} not supported by surface, using {} instead",
+                     magic_enum::enum_name(createInfo.PreferredSurfaceFormat),
+                     magic_enum::enum_name(surfaceFormat));
+    }
 
     surfaceConfig.device = device;
     surfaceConfig.format = surfaceFormat;
@@ -319,7 +338,6 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     surfaceConfig.alphaMode = wgpu::CompositeAlphaMode::Auto;
     surfaceConfig.presentMode = createInfo.PreferredPresentationMode;
     surface.Configure(&surfaceConfig);
-
 }
 
 ResizeStatus Context::Resize(uint32_t width, uint32_t height)
