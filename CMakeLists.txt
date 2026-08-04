@@ -6,10 +6,12 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # need this to generate various support files for the ocean fft
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-# need to find vulkan upfront so i can get dawn and slang to stop stomping on each other with their vulkan headers
-find_package(Vulkan REQUIRED)
-set(DAWN_VULKAN_HEADERS_DIR ${Vulkan_INCLUDE_DIR})
-set(VulkanHeaders_INCLUDE_DIR ${Vulkan_INCLUDE_DIR} CACHE PATH "" FORCE)
+
+if (NOT EMSCRIPTEN)
+    find_package(Vulkan REQUIRED)
+    set(DAWN_VULKAN_HEADERS_DIR ${Vulkan_INCLUDE_DIR})
+    set(VulkanHeaders_INCLUDE_DIR ${Vulkan_INCLUDE_DIR} CACHE PATH "" FORCE)
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,19 +40,22 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     endif()
 endif()
 
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation")
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build the GLFW example programs")
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "Build the GLFW test programs")
-set(GLFW_LIBRARY_TYPE "STATIC" CACHE STRING "Library type override for GLFW (SHARED, STATIC, OBJECT, or empty to follow BUILD_SHARED_LIBS)")
-add_subdirectory(third_party/glfw)
-set_target_properties(glfw PROPERTIES FOLDER "third_party")
+if (NOT EMSCRIPTEN)
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation")
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build the GLFW example programs")
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "Build the GLFW test programs")
+    set(GLFW_LIBRARY_TYPE "STATIC" CACHE STRING "Library type override for GLFW (SHARED, STATIC, OBJECT, or empty to follow BUILD_SHARED_LIBS)")
+    add_subdirectory(third_party/glfw)
+    set_target_properties(glfw PROPERTIES FOLDER "third_party")
 
-include(cmake/ConfigureSlang.cmake)
-add_subdirectory(third_party/slang SYSTEM EXCLUDE_FROM_ALL)
-organize_slang_targets()
+    include(cmake/ConfigureSlang.cmake)
+    add_subdirectory(third_party/slang SYSTEM EXCLUDE_FROM_ALL)
+    organize_slang_targets()
+    
+    include(cmake/ConfigureDawn.cmake)
+    add_subdirectory(third_party/dawn SYSTEM EXCLUDE_FROM_ALL)
+endif()
 
-include(cmake/ConfigureDawn.cmake)
-add_subdirectory(third_party/dawn SYSTEM EXCLUDE_FROM_ALL)
 
 set(MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF)
 set(MAGIC_ENUM_OPT_BUILD_TESTS OFF)
@@ -80,7 +85,7 @@ set(OCEAN_FFT_GENERATED_OUTPUTS
 add_custom_command(
     OUTPUT ${OCEAN_FFT_GENERATED_OUTPUTS}
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ocean_fft_support.py"
-            --config "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
+        --config "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ocean_fft_support.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
@@ -114,10 +119,14 @@ add_executable(OceanFFT ${OceanFFT_SOURCES} ${OceanFFT_Headers})
 add_dependencies(OceanFFT OceanFFT_GeneratedSources)
 target_include_directories(OceanFFT PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glfw/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/dawn/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/slang/include)
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
+
+if (NOT EMSCRIPTEN)
+    target_include_directories(OceanFFT PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glfw/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/dawn/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/slang/include)
+endif()
 # set required definition for imgui backend (dawn)
 target_compile_definitions(OceanFFT PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
 
@@ -131,11 +140,12 @@ endif()
 
 if (EMSCRIPTEN)
     target_compile_options(OceanFFT PRIVATE
-        "-O3"                    # Maximum optimization
-        "-flto"                  # Link-time optimization (needed at compile stage)
-        "-msimd128"              # SIMD support for better performance
-        "-fno-rtti"              # Disable RTTI if not needed (size reduction)
-        "-fno-exceptions"        # Disable exceptions if not needed (size reduction)
+        "--use-port=emdawnwebgpu" # Use the emdawnwebgpu port for WebGPU support
+        "-O3"                     # Maximum optimization
+        "-flto"                   # Link-time optimization (needed at compile stage)
+        "-msimd128"               # SIMD support
+        "-fno-rtti"               # Disable RTTI if not needed (reduce binary size)
+        "-fno-exceptions"         # Disable exceptions if not needed (reduce binary size)
     )
     target_link_options(OceanFFT PRIVATE
         "--use-port=emdawnwebgpu"
