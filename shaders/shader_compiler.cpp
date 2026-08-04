@@ -32,6 +32,7 @@
 #include <chrono>
 #include <memory>
 #include <type_traits>
+#include <future>
 
 namespace fs = std::filesystem;
 
@@ -176,11 +177,12 @@ namespace PermutationParameters
         return partials;
     }
 
+
 }
 
 const static PermutationParameters::Axis k_FftSizeParam{ "FFT_SIZE", {128u, 256u, 512u, 1024u, 2048u}, nullptr };
 const static PermutationParameters::Axis k_UseWaveOpsParam{ "FFT_USE_WAVE_OPS", {false, true}, nullptr };
-const static PermutationParameters::Axis k_WaveSizeParam{ "FFT_WAVE_SIZE", {32u, 64u, 128u}, &k_UseWaveOpsParam, true };
+const static PermutationParameters::Axis k_WaveSizeParam{ "FFT_WAVE_SIZE", {16u, 32u, 64u, 128u}, &k_UseWaveOpsParam, true };
 const static PermutationParameters::Space k_IFFT_PermutationSpace{ &k_FftSizeParam, &k_UseWaveOpsParam, &k_WaveSizeParam };
 
 struct CompiledEntryPoint
@@ -191,7 +193,25 @@ struct CompiledEntryPoint
     std::vector<PermutationParameters::Value> VariantParams;
     // Code should go in string view to dedupe it eventually
     std::string Code;
+    CompiledEntryPoint()
+    {
+        Name.reserve(32);
+        VariantParams.reserve(4);
+        Code.reserve(2048);
+    }
 };
+
+
+std::string EntryPointSuffixStr(const std::vector<PermutationParameters::Value>& values)
+{
+    std::string s;
+    for (const auto& value : values)
+    {
+        PermutationParameters::ValueStrBuilder builder("unused", value);
+        s += std::format("_{}", builder.HeldValueStr());
+    }
+    return s;
+}
 
 // Add compile options from command line invocations
 static std::vector<slang::CompilerOptionEntry> s_CompileOptions;
@@ -329,9 +349,9 @@ std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> Comp
     for (const auto& [axis, value] : variantParams)
     {
         PermutationParameters::ValueStrBuilder builder(axis->Name, value);
-        std::string moduleName = builder.ModuleNameStr();
-        std::string moduleSource = builder.SourceStr();
-        std::string modulePath = builder.ModulePathStr();
+        const std::string moduleName = builder.ModuleNameStr();
+        const std::string moduleSource = builder.SourceStr();
+        const std::string modulePath = builder.ModulePathStr();
         Slang::ComPtr<slang::IBlob> diag;
         // wait, how do we dispose of these modules? is slang tracking them internally?
         slang::IModule* variantModule = session->loadModuleFromSourceString(moduleName.c_str(), modulePath.c_str(), moduleSource.c_str(), diag.writeRef());
@@ -368,22 +388,65 @@ std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> Comp
         variantValues.emplace_back(value);
     }
 
-    for (SlangInt i = 0; i < entryPointCount; ++i)
+    // leaving this toggle in for now, but all evidence points to this being about 30% faster
+    // that's worth it, for now
+    constexpr bool k_MultithreadEntryPointCompilation = true;
+    if constexpr (k_MultithreadEntryPointCompilation)
     {
-        std::string wgslCode = ExtractEntryPointBytecodeWGSL(linked, i);
-        if (wgslCode.empty())
+        // GetEntryPointCode is one of the very few things we can multithread: use simple std::async and std::future
+        // to compile each entrypoint in parallel
+        using FutureResult = std::future<std::string>;
+        for (SlangInt i = 0; i < entryPointCount; ++i)
         {
-            return std::unexpected(diag);
+            results[static_cast<size_t>(i)].Name = entryPointNames.at(i);
+            results[static_cast<size_t>(i)].VariantParams = variantValues;
         }
 
-        results[static_cast<size_t>(i)].Name = entryPointNames.at(i);
-        results[static_cast<size_t>(i)].VariantParams = variantValues;
-        results[static_cast<size_t>(i)].Code = std::move(wgslCode);
+        // now dispatch the compilation of each entrypoint in parallel
+        std::vector<FutureResult> futures;
+        for (SlangInt i = 0; i < entryPointCount; ++i)
+        {
+            futures.emplace_back(std::async(std::launch::async, [linked, i]()
+            {
+                std::string wgslCode = ExtractEntryPointBytecodeWGSL(linked, i);
+                if (wgslCode.empty())
+                {
+                    return std::string{};
+
+                }
+                return std::move(wgslCode);
+            }));
+        }
+
+        for (SlangInt i = 0; i < entryPointCount; ++i)
+        {
+            auto result = futures[static_cast<size_t>(i)].get();
+            if (result.empty())
+            {
+                return std::unexpected(diag);
+            }
+            results[static_cast<size_t>(i)].Code = std::move(result);
+        }
+    }
+    else
+    {
+        for (SlangInt i = 0; i < entryPointCount; ++i)
+        {
+            std::string wgslCode = ExtractEntryPointBytecodeWGSL(linked, i);
+            if (wgslCode.empty())
+            {
+                return std::unexpected(diag);
+            }
+
+            results[static_cast<size_t>(i)].Name = entryPointNames.at(i);
+            results[static_cast<size_t>(i)].VariantParams = variantValues;
+            results[static_cast<size_t>(i)].Code = std::move(wgslCode);
+        }
     }
 
     auto variantPrinter = [&variantParams]()
     {
-        std::string s;
+        std::string s; s.reserve(16 * variantParams.size());
         for (const auto& [axis, value] : variantParams)
         {
             PermutationParameters::ValueStrBuilder builder(axis->Name, value);
@@ -405,8 +468,13 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
         fs::create_directories(temporary_dir_for_shaders);
         std::println(stderr, "[shader_compiler] created temporary directory for cache: {}", temporary_dir_for_shaders.string());
     }
+    else
+    {
+        std::println(stderr, "[shader_compiler] using existing temporary directory for cache: {}", temporary_dir_for_shaders.string());
+    }
 
-    std::vector<std::string> searchPaths = {modPath.parent_path().string(), temporary_dir_for_shaders.string()};
+    fs::path canonicalModulePath = fs::canonical(modPath);
+    std::vector<std::string> searchPaths = { canonicalModulePath.parent_path().string(), temporary_dir_for_shaders.string() };
     std::string stem = modPath.stem().string();
     std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
     Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, searchPaths);
@@ -432,6 +500,7 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
 
     // init the components vector with the core module, which is the first component in the composite
     std::vector<slang::IComponentType*> components;
+    components.reserve(4 + mod->getDefinedEntryPointCount());
     components.emplace_back(mod);
 
     // dump the module to file - just this "core" module we're compiling, not the dummy ones we create for each variant    
@@ -447,7 +516,8 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
         }
         else
         {
-            std::println(stderr, "[shader_compiler] wrote built module {} to cache at {}", moduleName, modulePath);
+            const std::string moduleFName = fs::path(modulePath).filename().string();
+            std::println(stderr, "[shader_compiler] wrote built module {} to cache as {}", moduleName, moduleFName);
         }
     }
 
@@ -562,8 +632,8 @@ static void WriteHeader(
 
     for (const CompiledEntryPoint& shader : shaders)
     {
-        //const std::string shaderSuffix = std::format("_fft{}_wave{}_ops{}", shader.fftSize, shader.waveSize, shader.waveOps);
-        //f << WriteWgslShaderSourceToCppArray(shader.code, GetShaderCodeArrayName(shader.name, shaderSuffix));
+        const std::string shaderSuffix = EntryPointSuffixStr(shader.VariantParams);
+        f << WriteWgslShaderSourceToCppArray(shader.Code, GetShaderCodeArrayName(shader.Name, shaderSuffix));
     }
 
     f << "} // namespace OceanFFT::Shaders\n";
@@ -639,28 +709,31 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    Slang::ComPtr<slang::IGlobalSession> global;
-    slang::createGlobalSession(global.writeRef());
-
-    std::vector<CompiledEntryPoint> all_entry_points;
-    for (auto& module_path : modulePaths)
+    for (size_t testRun = 0; testRun < 25; ++testRun)
     {
-        std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
-        auto entry_points = CompileModule(global.get(), module_path);
-        all_entry_points.insert(all_entry_points.end(),
-                                std::make_move_iterator(entry_points.begin()),
-                                std::make_move_iterator(entry_points.end()));
+        Slang::ComPtr<slang::IGlobalSession> global;
+        slang::createGlobalSession(global.writeRef());
+
+        std::vector<CompiledEntryPoint> all_entry_points;
+        for (auto& module_path : modulePaths)
+        {
+            std::println(stderr, "[shader_compiler] Compiling module: {}", module_path.string());
+            auto entry_points = CompileModule(global.get(), module_path);
+            all_entry_points.insert(all_entry_points.end(),
+                std::make_move_iterator(entry_points.begin()),
+                std::make_move_iterator(entry_points.end()));
+        }
+
+        if (all_entry_points.empty())
+        {
+            std::cerr << "no entrypoints compiled\n";
+            return 1;
+        }
+
+        // now search entrypoints and dedupe: we can point multiple entrypoint variants to
+        // the same source, but shouldn't have duplicate source in the header
+
+        WriteHeader(all_entry_points, outputPath);
     }
-
-    if (all_entry_points.empty())
-    {
-        std::cerr << "no entrypoints compiled\n";
-        return 1;
-    }
-
-    // now search entrypoints and dedupe: we can point multiple entrypoint variants to
-    // the same source, but shouldn't have duplicate source in the header
-
-    WriteHeader(all_entry_points, outputPath);
     return 0;
 }
