@@ -242,6 +242,12 @@ void AddDefaultCompileOptions()
     optDebugInfoLevel.value.kind = slang::CompilerOptionValueKind::Int;
     optDebugInfoLevel.value.intValue0 = SlangDebugInfoLevel::SLANG_DEBUG_INFO_LEVEL_NONE;
     s_CompileOptions.push_back(optDebugInfoLevel);
+    // enable checking "up to date" for binary modules slang finds in the search path
+    slang::CompilerOptionEntry optCheckBinaryModuleUpToDate{};
+    optCheckBinaryModuleUpToDate.name = slang::CompilerOptionName::UseUpToDateBinaryModule;
+    optCheckBinaryModuleUpToDate.value.kind = slang::CompilerOptionValueKind::Int;
+    optCheckBinaryModuleUpToDate.value.intValue0 = static_cast<int32_t>(true);
+    s_CompileOptions.push_back(optCheckBinaryModuleUpToDate);
 }
 
 static std::string SlangBlobToStr(slang::IBlob* b)
@@ -393,7 +399,14 @@ std::expected<std::vector<CompiledEntryPoint>, Slang::ComPtr<slang::IBlob>> Comp
 
 static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* global, const fs::path& modPath)
 {
-    std::vector<std::string> searchPaths = {modPath.parent_path().string()};
+    fs::path temporary_dir_for_shaders = fs::temp_directory_path() / "OceanFFT_ShaderCompiler";
+    if (!fs::exists(temporary_dir_for_shaders))
+    {
+        fs::create_directories(temporary_dir_for_shaders);
+        std::println(stderr, "[shader_compiler] created temporary directory for cache: {}", temporary_dir_for_shaders.string());
+    }
+
+    std::vector<std::string> searchPaths = {modPath.parent_path().string(), temporary_dir_for_shaders.string()};
     std::string stem = modPath.stem().string();
     std::chrono::steady_clock::time_point startTime = std::chrono::steady_clock::now();
     Slang::ComPtr<slang::ISession> session = MakeSlangSession(global, searchPaths);
@@ -420,6 +433,24 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
     // init the components vector with the core module, which is the first component in the composite
     std::vector<slang::IComponentType*> components;
     components.emplace_back(mod);
+
+    // dump the module to file - just this "core" module we're compiling, not the dummy ones we create for each variant    
+    SlangInt numModules = session->getLoadedModuleCount();
+    for (SlangInt i = 0; i < numModules; ++i)
+    {
+        slang::IModule* loadedModule = session->getLoadedModule(i);
+        const std::string moduleName = loadedModule->getName();
+        const std::string modulePath = (temporary_dir_for_shaders / (moduleName + ".slang-module")).string();
+        if (SLANG_FAILED(loadedModule->writeToFile(modulePath.c_str())))
+        {
+            std::println(stderr, "[shader_compiler] failed to write built module {} to {}", moduleName, modulePath);
+        }
+        else
+        {
+            std::println(stderr, "[shader_compiler] wrote built module {} to cache at {}", moduleName, modulePath);
+        }
+    }
+
 
     const SlangInt epCount = mod->getDefinedEntryPointCount();
     std::vector<Slang::ComPtr<slang::IEntryPoint>> entryPoints(epCount);
@@ -475,6 +506,7 @@ static std::vector<CompiledEntryPoint> CompileModule(slang::IGlobalSession* glob
     // cast elapsed time to milliseconds for easier reading
     std::chrono::duration<double, std::milli> elapsedTimeMs = elapsedTime;
     std::println(stderr, "[shader_compiler] compiled {} entrypoints for module {} in {}ms", results.size(), stem, elapsedTimeMs.count());
+
     return results;
 }
 
