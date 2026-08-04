@@ -17,11 +17,26 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-if (MSVC)
-    # MP = helps with slang compile, bigobj = same deal, slang can break without this
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /arch:AVX2 /Gy")
-endif()
 
+# One should really not be modifying the CMAKE_CXX_FLAGS directly,
+# but I need to make sure these are passed down to child projects
+# and do keep things fairly low risk and minimal at least
+if (MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # MSVC specific flags
+    # /MP: Tells cl.exe to multithread
+    # /bigobj: Increases number of sections in .obj (slang can bump into this ime)
+    # /arch:AVX2: Enables AVX2 instructions
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /arch:AVX2 /Gy")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # Clang specific flags
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2")
+    if (CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+        # emulate bigobj flag as, again, slang can break on this
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj")
+    elseif(MINGW)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mbig-obj")
+    endif()
+endif()
 
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build the GLFW documentation")
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build the GLFW example programs")
@@ -30,14 +45,12 @@ set(GLFW_LIBRARY_TYPE "STATIC" CACHE STRING "Library type override for GLFW (SHA
 add_subdirectory(third_party/glfw)
 set_target_properties(glfw PROPERTIES FOLDER "third_party")
 
-# removed slang: too many bugs, and all we need is slangc for compiling shaders,
-# which we can do with prebuilt binaries
 include(cmake/ConfigureSlang.cmake)
-add_subdirectory(third_party/slang)
+add_subdirectory(third_party/slang SYSTEM EXCLUDE_FROM_ALL)
 organize_slang_targets()
 
 include(cmake/ConfigureDawn.cmake)
-add_subdirectory(third_party/dawn EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/dawn SYSTEM EXCLUDE_FROM_ALL)
 
 set(MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF)
 set(MAGIC_ENUM_OPT_BUILD_TESTS OFF)
@@ -148,5 +161,4 @@ else()
     if (WIN32)
         target_link_libraries(OceanFFT PRIVATE dawn_native magic_enum::magic_enum)
     endif()
-    # similar link options locally
 endif()
