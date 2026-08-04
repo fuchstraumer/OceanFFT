@@ -34,6 +34,16 @@
 #include <type_traits>
 #include <future>
 
+/*
+    TODO:
+    - Refactor codegen to dump shaders to source, and add accessor to header
+    - Generate accessor that uses a parameters struct for variants: struct created from Permutation Space
+    - Dedupe variant sources, since a number of them should end up identical
+    - Identify how we want to key/map our input accessor params to the shader variants, and generate that code
+    - Expand permutations system so that an axis can actually generate multiple values, e.g. WAVE_SIZE would generate
+      and set values for FFT_WAVE_SIZE_LOG2 (paves way for better subdivision of work via threadgroup scaling)
+*/
+
 namespace fs = std::filesystem;
 
 namespace PermutationParameters

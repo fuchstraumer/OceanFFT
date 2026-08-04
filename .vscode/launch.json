@@ -5,37 +5,48 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch Shader Compiler [Release] (C++)",
+            "name": "Launch OceanFFT [Debug] [Native]",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/Debug/OceanFFT.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Launch Shader Compiler [Release]",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/shaders/Release/OceanShaderCompiler.exe",
-            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--O3", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
+            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--03", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
-            "console": "externalTerminal"
+            "console": "integratedTerminal"
         },
         {
-            "name": "Launch Shader Compiler [RelWithDebInfo] (C++)",
+            "name": "Launch Shader Compiler [RelWithDebInfo]",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/shaders/RelWithDebInfo/OceanShaderCompiler.exe",
-            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--O3", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
+            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--O3", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
-            "console": "externalTerminal"
+            "console": "integratedTerminal"
         },
         {
-            "name": "Launch Shader Compiler [Debug] (C++)",
+            "name": "Launch Shader Compiler [Debug]",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/shaders/Debug/OceanShaderCompiler.exe",
-            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "--O3", "--wave-variants", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
+            "args": ["--output", "${workspaceFolder}/include/generated/OceanShaders.hpp", "${workspaceFolder}/shaders/compute/OceanFft.slang" ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
-            "console": "externalTerminal"
+            "console": "integratedTerminal"
         },
         {
             "name": "Python Debugger: Current File",

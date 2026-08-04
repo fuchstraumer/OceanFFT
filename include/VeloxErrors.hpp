@@ -1,13 +1,14 @@
 #pragma once
 #ifndef VELOX_ERRORS_HPP
 #define VELOX_ERRORS_HPP
-
+#include <string>
 #include <expected>
 #include <print>
 #include <format>
 #include <type_traits>
 // backend for us is always dawn
 #include <webgpu/webgpu_cpp.h>
+#include <iostream>
 
 // Assert-style wrappers for various WGPU functions using std::expected. A lot of this comes from the following repo,
 // but also this is probably just going to  be a common pattern across most WebGPU apps I think.... 
@@ -51,7 +52,8 @@ namespace velox
     {
         if (!result)
         {
-            std::println(stderr, "Error: {}", result.error());
+            std::string errorMessage = "Error: " + std::to_string(static_cast<int>(result.error()));
+            std::cerr << errorMessage << std::endl;
             std::exit(1); // should shore this up with better exit codes and callbacks eventually
         }
         return result.value();

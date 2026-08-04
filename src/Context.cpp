@@ -147,7 +147,10 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
 {
     wgpu::RequestAdapterOptions options{};
 #ifndef __EMSCRIPTEN__
-    options.backendType = wgpu::BackendType::Vulkan; // default to vulkan, since we know it best
+    // can't use vulkan on desktop, as nvidia drivers have severe bugs with f16
+    // our entire framework is built on f16 LMAO
+    // https://issues.chromium.org/issues/42251215
+    options.backendType = wgpu::BackendType::D3D12;
 #endif
     options.featureLevel = createInfo.FeatureLevel;
     options.powerPreference = createInfo.PowerPreference;

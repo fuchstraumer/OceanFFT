@@ -14,4 +14,10 @@ set(TINT_BUILD_DOCS OFF)
 set(TINT_BUILD_TESTS OFF)
 set(TINT_BUILD_SAMPLES OFF)
 set(TINT_BUILD_CMD_TOOLS OFF)
-# compiling in slang: don't need extra validation
+# disable a few components we don't need
+set(TINT_BUILD_GLSL_VALIDATOR OFF)
+set(TINT_BUILD_SPV_WRITER OFF)
+set(TINT_BUILD_SPV_READER OFF)
+# we *do* want to make sure we enable DXC, as it's required to enable and use
+# both subgroups and shader-f16
+set(DAWN_USE_BUILT_DXC ON)
