@@ -78,29 +78,30 @@ set(IMGUI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui/backends/imgui_impl_wgpu.cpp)
 
 set(OCEAN_FFT_GENERATED_OUTPUTS
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/DonelanBannerNormLUT.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/DonelanBannerNormLUT.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/SinCosLUT.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/SinCosLUT.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/compute/OceanFFT_Generated.slang")
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/DonelanBannerNormLUT.hpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/DonelanBannerNormLUT.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/SinCosLUT.hpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/SinCosLUT.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/OceanFFT_Generated.slang")
 
 add_custom_command(
     OUTPUT ${OCEAN_FFT_GENERATED_OUTPUTS}
     COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/ocean_fft_support.py"
         --config "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/OceanFftConfig.yaml"
+        --project_root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --lut_dir "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        --shader_dir "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/ocean_fft_support.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/OceanFftConfig.yaml"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts"
     COMMENT "Generating OceanFFT support files..."
     VERBATIM)
+set_source_files_properties(${OCEAN_FFT_GENERATED_OUTPUTS} PROPERTIES GENERATED TRUE)
 
 # Ensures slang file generates even if OceanFFT target isn't built first
-add_custom_target(OceanFft_GeneratedSources ALL DEPENDS ${OCEAN_FFT_GENERATED_OUTPUTS})
 
 set(VeloxRhi_Headers
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/DonelanBannerNormLUT.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/SinCosLUT.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Application.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Context.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Callbacks.hpp"
@@ -113,15 +114,13 @@ set(VeloxRhi_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Application.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Context.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Callbacks.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ShaderUtils.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/DonelanBannerNormLUT.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/SinCosLUT.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ShaderUtils.cpp")
 
-add_executable(VeloxRhi ${VeloxRhi_SOURCES} ${VeloxRhi_Headers})
-add_dependencies(VeloxRhi OceanFft_GeneratedSources)
+add_executable(VeloxRhi ${VeloxRhi_SOURCES} ${VeloxRhi_Headers} ${OCEAN_FFT_GENERATED_OUTPUTS})
 target_include_directories(VeloxRhi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 if (NOT EMSCRIPTEN)
     target_include_directories(VeloxRhi PRIVATE
@@ -140,27 +139,42 @@ else()
     message(WARNING "IPO is not supported: ${ipo_error}")
 endif()
 
+set(VeloxRhi_Shaders
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/OceanFFT.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/IfftPermute.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/IfftRadix2_f32.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/IfftRadix2.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/IfftRadix4.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/InitSpectrum.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/OceanFftBindings.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/OceanFftCommon.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/OceanFftDims.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/Spectra.slang")
+
+source_group("rhi\\include" FILES ${VeloxRhi_Headers})
+source_group("rhi\\src" FILES ${VeloxRhi_SOURCES})
+source_group("rhi\\imgui" FILES ${IMGUI_SOURCES})
+source_group("rhi\\shaders" FILES ${VeloxRhi_Shaders})
+source_group("rhi\\generated" FILES ${OCEAN_FFT_GENERATED_OUTPUTS})
+
 if (EMSCRIPTEN)
     target_compile_options(VeloxRhi PRIVATE
         "-O3"                     # Maximum optimization
         "-flto"                   # Link-time optimization (needed at compile stage)
-        "-msimd128"               # SIMD support
         "-fno-rtti"               # Disable RTTI if not needed (reduce binary size)
         "-fno-exceptions"         # Disable exceptions if not needed (reduce binary size)
     )
     target_link_options(VeloxRhi PRIVATE
         "-O3"                                    # Maximum optimization
+        "-sWASM=1"
         "-flto"                                  # Link-time optimization
         "-sUSE_GLFW=3"                           # Use Emscripten's GLFW port
         "-sALLOW_MEMORY_GROWTH=0"                # Static memory allocation
-        "-sFILESYSTEM=0"                         # No filesystem support
-        "-sENVIRONMENT=web"                      # Target web only
-        "-sMINIMAL_RUNTIME=0"                    # Full runtime (needed for WebGPU)
-        "-sMALLOC=emmalloc"                      # Smaller malloc implementation
-        "-sASSERTIONS=0"                         # Disable assertions in release
-        "-sSTACK_SIZE=1MB"                       # Adjust if needed
-        "-sINITIAL_MEMORY=64MB"                  # Adjust based on your needs
-        "--closure=1")                            # Enable Closure Compiler for JS minification
+        "-sNO_EXIT_RUNTIME=0"
+        "-sNO_FILESYSTEM=1"                         # No filesystem support
+        "-sMALLOC=emmalloc")                      # Smaller malloc implementation
+        #"--closure=1"                            # Enable Closure Compiler for JS minification
+        #"--closure-args=--externs=${CMAKE_CURRENT_SOURCE_DIR}/tools/js/veloxrhi-externs.js")
     target_link_libraries(VeloxRhi PRIVATE emdawnwebgpu_cpp webgpu_glfw magic_enum::magic_enum)
     set_target_properties(VeloxRhi PROPERTIES SUFFIX ".html")
 else()

@@ -80,14 +80,3 @@ lut_resolution_settings:
     # functions in generated shader ISA. using f16 means we can stay in f16 pipe, which also tends to run as packed
     # (meaning 2x f16 ops per cycle on most modern GPUs!)
     use_f16: true
-
-# Controls where output files are written to -- paths relative to project_root
-script_output_paths:
-  - name: project_root
-    path: "D:/VeloxRhi"
-  - name: cpp_header_path
-    path: "include/generated"
-  - name: cpp_source_path
-    path: "src/generated"
-  - name: shaders_path
-    path: "assets/shaders/compute"
