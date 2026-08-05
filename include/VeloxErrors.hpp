@@ -6,9 +6,13 @@
 #include <print>
 #include <format>
 #include <type_traits>
-// backend for us is always dawn
+#include <source_location>
 #include <webgpu/webgpu_cpp.h>
-#include <iostream>
+#include <magic_enum/magic_enum.hpp>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 // Assert-style wrappers for various WGPU functions using std::expected. A lot of this comes from the following repo,
 // but also this is probably just going to  be a common pattern across most WebGPU apps I think.... 
@@ -22,6 +26,7 @@ namespace velox
     enum class RhiError : uint32_t
     {
         // WebGPU errors
+        InstanceRequestFailed = 0,
         AdapterRequestFailed = 1,
         DeviceRequestFailed = 2,
         SurfaceCreationFailed = 3,
@@ -52,9 +57,12 @@ namespace velox
     {
         if (!result)
         {
-            std::string errorMessage = "Error: " + std::to_string(static_cast<int>(result.error()));
-            std::cerr << errorMessage << std::endl;
-            std::exit(1); // should shore this up with better exit codes and callbacks eventually
+            std::println(stderr, "ValidOrExit failure with error {}", magic_enum::enum_name(result.error()));
+#ifdef __EMSCRIPTEN__
+            emscripten_force_exit(1);
+#else
+            std::exit(1);
+#endif
         }
         return result.value();
     }
@@ -64,8 +72,12 @@ namespace velox
     {
         if (!result)
         {
-            std::println(stderr, "Error: {}", result.error());
+            std::println(stderr, "ValidOrExit failure: {}", magic_enum::enum_name(result.error()));
+#ifdef __EMSCRIPTEN__
+            emscripten_force_exit(1);
+#else
             std::exit(1);
+#endif
         }
     }
 }

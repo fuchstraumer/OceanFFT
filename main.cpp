@@ -9,8 +9,14 @@
 #endif
 
 constexpr const char* const shaderSource = R"(
+struct VertexOutput
+{
+    @builtin(position) Position : vec4<f32>,
+    @location(0) VertexColor : vec4<f32>
+};
+
 @vertex
-fn VsMain(@builtin(vertex_index) inVertexIndex : u32) -> @builtin(position) vec4<f32>
+fn VsMain(@builtin(vertex_index) inVertexIndex : u32) -> VertexOutput
 {
     var pos = array<vec2<f32>, 3>
     (
@@ -18,13 +24,38 @@ fn VsMain(@builtin(vertex_index) inVertexIndex : u32) -> @builtin(position) vec4
         vec2<f32>(-0.5, -0.5),
         vec2<f32>(0.5, -0.5)
     );
-    return vec4<f32>(pos[inVertexIndex], 0.0, 1.0);
+
+    var color = array<vec3<f32>, 3>
+    (
+        vec3<f32>(1.0, 0.0, 0.0),
+        vec3<f32>(0.0, 1.0, 0.0),
+        vec3<f32>(0.0, 0.0, 1.0)
+    );
+
+    var output : VertexOutput;
+    output.Position = vec4<f32>(pos[inVertexIndex], 0.0, 1.0);
+    output.VertexColor = vec4<f32>(color[inVertexIndex], 1.0);
+    return output;
 }
 
+const kExposure : f32 = 4.0;
+const kTonemap : u32 = 2u; // 0 = raw/hard-clip, 1 = Reinhard, 2 = crude ACES-ish
+
 @fragment
-fn FsMain() -> @location(0) vec4<f32>
+fn FsMain(in: VertexOutput) -> @location(0) vec4<f32>
 {
-    return vec4<f32>(0.0, 0.4, 0.0, 1.0);
+    var c = in.VertexColor.rgb * kExposure;
+
+    if (kTonemap == 1u)
+    {
+        c = c / (c + vec3<f32>(1.0));
+    } 
+    else if (kTonemap == 2u)
+    {
+        c = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+
+    return vec4<f32>(c, in.VertexColor.a);
 }
 )";
 
@@ -36,6 +67,7 @@ void Render(wgpu::Surface& surface, wgpu::Device& device, wgpu::Queue& queue, wg
     colorAttachment.view = surfaceTexture.texture.CreateView();
     colorAttachment.loadOp = wgpu::LoadOp::Clear;
     colorAttachment.storeOp = wgpu::StoreOp::Store;
+    colorAttachment.clearValue = { 113.0f / 255.0f, 153.0f / 255.0f, 1.0f, 1.0f };
 
     wgpu::RenderPassDescriptor renderPassDesc{};
     renderPassDesc.colorAttachmentCount = 1;
@@ -83,7 +115,9 @@ int main()
     createInfo.RequiredFeatures = requestedFeaturesSpan;
     createInfo.FeatureLevel = wgpu::FeatureLevel::Compatibility;
     createInfo.PowerPreference = wgpu::PowerPreference::HighPerformance;
-    createInfo.PreferredSurfaceFormat = wgpu::TextureFormat::RGB10A2Unorm;
+    createInfo.PreferredSurfaceFormat = wgpu::TextureFormat::BGRA8Unorm;
+    createInfo.PreferredColorSpace = wgpu::PredefinedColorSpace::SRGB;
+    createInfo.PreferredToneMappingMode = wgpu::ToneMappingMode::Standard;
     
     Context context(createInfo);
     // okay, lets try a basic triangle

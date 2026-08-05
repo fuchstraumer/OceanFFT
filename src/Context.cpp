@@ -37,22 +37,6 @@ std::string GetSystemDirectory()
 namespace
 {
     
-    static const std::unordered_map<wgpu::ErrorType, std::string_view> ErrorTypeStrings
-    {
-        { wgpu::ErrorType::NoError, "No Error" },
-        { wgpu::ErrorType::Validation, "Validation" },
-        { wgpu::ErrorType::OutOfMemory, "Out of Memory" },
-        { wgpu::ErrorType::Internal, "Internal" },
-        { wgpu::ErrorType::Unknown, "Unknown" }
-    };
-
-    static const std::unordered_map<wgpu::DeviceLostReason, std::string_view> DeviceLostReasonStrings
-    {
-        { wgpu::DeviceLostReason::Unknown, "Unknown" },
-        { wgpu::DeviceLostReason::Destroyed, "Destroyed (Routine shutdown)" },
-        { wgpu::DeviceLostReason::CallbackCancelled, "Callback Cancelled" },
-        { wgpu::DeviceLostReason::FailedCreation, "Creation Failed" }
-    };
 
     // todo: we should sink these somewhere more portable, and which could actually give us debug info in live clients maybe?
     [[noreturn]] void LogUncapturedError(
@@ -60,11 +44,9 @@ namespace
         wgpu::ErrorType type,
         wgpu::StringView message)
     {
-        const auto iter = ErrorTypeStrings.find(type);
-        const std::string_view typeStr = (iter != ErrorTypeStrings.end()) ? iter->second : "Unknown";
         std::println(stderr,
                      "[wgpu] Uncaptured error, exiting | Error Type \"{}\" | Message: {}",
-                     typeStr, std::string_view(message.data, message.length));
+                     magic_enum::enum_name(type), std::string_view(message.data, message.length));
         std::exit(1);
     }
 
@@ -74,11 +56,9 @@ namespace
         wgpu::StringView message)
     {
         // note that this is also called for routine destruction, so messages from here don't always mean something went wrong
-        const auto it = DeviceLostReasonStrings.find(reason);
-        const std::string_view reasonStr = (it != DeviceLostReasonStrings.end()) ? it->second : "Unknown";
         std::println(stderr,
                      "[wgpu] Device lost | Reason: \"{}\" | Message: {}",
-                     reasonStr, std::string_view(message.data, message.length));
+                     magic_enum::enum_name(reason), std::string_view(message.data, message.length));
     }
 }
 
@@ -223,7 +203,7 @@ std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCr
     instance = wgpu::CreateInstance(&instanceDesc);
     if (!instance)
     {
-        return std::unexpected(RhiError::AdapterRequestFailed);
+        return std::unexpected(RhiError::InstanceRequestFailed);
     }
     return std::move(instance);
 }
@@ -271,8 +251,6 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
     deviceDesc.label = createInfo.ApplicationName;
     deviceDesc.SetUncapturedErrorCallback(LogUncapturedError);
     deviceDesc.SetDeviceLostCallback(wgpu::CallbackMode::AllowSpontaneous, LogDeviceLost);
-    // todo: leaving required limits blank clamps to minspec, which is fine for now. will have to assess this better in future
-    //deviceDesc.requiredLimits = nullptr;
     if (!createInfo.RequiredFeatures.empty())
     {
         deviceDesc.requiredFeatureCount = createInfo.RequiredFeatures.size();
@@ -320,10 +298,6 @@ std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCr
         return std::unexpected(RhiError::GLFWInitFailed);
     }
 
-    // set of basic flags to make this a bit easier to work with on desktop
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
-    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
     // works like Vulkan - no context, just platform window
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
@@ -361,6 +335,15 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
         { 
             return format == createInfo.PreferredSurfaceFormat;
         };
+
+    // print suported formats
+    std::string supportedFormats;
+    for (size_t i = 0; i < capabilities.formatCount; ++i)
+    {
+        supportedFormats += std::format(" {} |", magic_enum::enum_name(capabilities.formats[i]));
+    }
+    std::println(stderr, "[velox][context] Surface supported formats:{}", supportedFormats);
+
     auto format_iter = std::find_if(capabilities.formats,
                                     capabilities.formats + capabilities.formatCount,
                                     format_match);
@@ -387,6 +370,14 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     // todo: assess later how/if we may want to change alpha mode
     surfaceConfig.alphaMode = wgpu::CompositeAlphaMode::Auto;
     surfaceConfig.presentMode = createInfo.PreferredPresentationMode;
+#ifdef __EMSCRIPTEN__
+    // this is only valid on emscripten: on native, we don't need to tell the compositor
+    // or surface what colorspace we're in or to respect our tonemapping
+    wgpu::SurfaceColorManagement colorManagement{};
+    colorManagement.colorSpace = createInfo.PreferredColorSpace;
+    colorManagement.toneMappingMode = createInfo.PreferredToneMappingMode;
+    surfaceConfig.nextInChain = &colorManagement;
+#endif
     surface.Configure(&surfaceConfig);
 }
 

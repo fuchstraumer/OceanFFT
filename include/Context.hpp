@@ -35,6 +35,7 @@ namespace velox
         wgpu::TextureFormat PreferredSurfaceFormat{ wgpu::TextureFormat::Undefined };
         // todo: how does HDR support actually work? we'll need a tonemapper too....
         wgpu::PredefinedColorSpace PreferredColorSpace{ wgpu::PredefinedColorSpace::SRGB };
+        wgpu::ToneMappingMode PreferredToneMappingMode{ wgpu::ToneMappingMode::Standard };
         wgpu::PresentMode PreferredPresentationMode{ wgpu::PresentMode::Fifo };
     };
 
