@@ -70,14 +70,18 @@ namespace velox
         wgpu::TextureView AcquireNextFrame();
         void Present();
 
-        const wgpu::Instance& GetInstance() const noexcept;
-        const wgpu::Adapter& GetAdapter() const noexcept;
-        const wgpu::Device& GetDevice() const noexcept;
-        const wgpu::Queue& GetQueue() const noexcept;
-        const wgpu::Surface& GetSurface() const noexcept;
+        wgpu::Instance& GetInstance() noexcept;
+        wgpu::Adapter& GetAdapter() noexcept;
+        wgpu::Device& GetDevice() noexcept;
+        wgpu::Queue& GetQueue() noexcept;
+        wgpu::Surface& GetSurface() noexcept;
         wgpu::TextureFormat GetSurfaceFormat() const noexcept;
 
         bool HasFeature(wgpu::FeatureName feature) const noexcept;
+
+    #ifndef __EMSCRIPTEN__
+        GLFWwindow* GetNativeWindow() const noexcept;
+    #endif
 
     private:
 
@@ -102,7 +106,6 @@ namespace velox
         GLFWwindow* nativeWindow{ nullptr };
 #endif
         wgpu::Surface surface;
-        wgpu::TextureFormat surfaceFormat{ wgpu::TextureFormat::Undefined };
         // we store the surface config to make reconfiguring not need the whole create info
         wgpu::SurfaceConfiguration surfaceConfig{};
     };

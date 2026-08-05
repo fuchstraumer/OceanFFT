@@ -5,13 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch OceanFFT [Debug] [Native]",
+            "name": "Launch OceanFFT [Native]",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/Debug/OceanFFT.exe",
+            "program": "${command:cmake.launchTargetPath}",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
+            "cwd": "${command:cmake.getLaunchTargetDirectory}",
             "environment": [],
             "console": "integratedTerminal"
         },

@@ -2,6 +2,50 @@
 #include <cassert>
 #include <string_view>
 #include <span>
+#include "GLFW/glfw3.h"
+
+constexpr const char* const shaderSource = R"(
+@vertex
+fn VsMain(@builtin(vertex_index) inVertexIndex : u32) -> @builtin(position) vec4<f32>
+{
+    var pos = array<vec2<f32>, 3>
+    (
+        vec2<f32>(0.0, 0.5),
+        vec2<f32>(-0.5, -0.5),
+        vec2<f32>(0.5, -0.5)
+    );
+    return vec4<f32>(pos[inVertexIndex], 0.0, 1.0);
+}
+
+@fragment
+fn FsMain() -> @location(0) vec4<f32>
+{
+    return vec4<f32>(0.0, 0.4, 0.0, 1.0);
+}
+)";
+
+void Render(wgpu::Surface& surface, wgpu::Device& device, wgpu::Queue& queue, wgpu::RenderPipeline& pipeline)
+{
+    wgpu::SurfaceTexture surfaceTexture{};
+    surface.GetCurrentTexture(&surfaceTexture);
+    wgpu::RenderPassColorAttachment colorAttachment{};
+    colorAttachment.view = surfaceTexture.texture.CreateView();
+    colorAttachment.loadOp = wgpu::LoadOp::Clear;
+    colorAttachment.storeOp = wgpu::StoreOp::Store;
+
+    wgpu::RenderPassDescriptor renderPassDesc{};
+    renderPassDesc.colorAttachmentCount = 1;
+    renderPassDesc.colorAttachments = &colorAttachment;
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder renderPass = encoder.BeginRenderPass(&renderPassDesc);
+    renderPass.SetPipeline(pipeline);
+    renderPass.Draw(3);
+    renderPass.End();
+
+    wgpu::CommandBuffer commandBuffer = encoder.Finish();
+    queue.Submit(1, &commandBuffer);
+}
 
 int main()
 {
@@ -20,6 +64,72 @@ int main()
     createInfo.PreferredSurfaceFormat = wgpu::TextureFormat::RGB10A2Unorm;
     
     Context context(createInfo);
+    // okay, lets try a basic triangle
+    using namespace wgpu;
+
+    ShaderSourceWGSL wgslSource{};
+    wgslSource.code = shaderSource;
+    ShaderModuleDescriptor shaderDesc{};
+    shaderDesc.nextInChain = &wgslSource;
+    ShaderModule shaderModule = context.GetDevice().CreateShaderModule(&shaderDesc);
+    if (!shaderModule)
+    {
+        std::println(stderr, "[velox][main] Failed to create shader module");
+        return -1;
+    }
+    
+    ColorTargetState colorTarget{};
+    colorTarget.format = context.GetSurfaceFormat();
+
+    VertexState vertexState{};
+    vertexState.module = shaderModule;
+    vertexState.bufferCount = 0;
+    vertexState.buffers = nullptr;
+    vertexState.entryPoint = "VsMain";
+
+    PrimitiveState primitiveState{};
+    primitiveState.topology = PrimitiveTopology::TriangleList;
+    primitiveState.cullMode = CullMode::None;
+    primitiveState.frontFace = FrontFace::CCW;
+
+    FragmentState fragmentState{};
+    fragmentState.module = shaderModule;
+    fragmentState.targetCount = 1;
+    fragmentState.targets = &colorTarget;
+    fragmentState.entryPoint = "FsMain";
+
+    RenderPipelineDescriptor pipelineDesc{};
+    pipelineDesc.label = "TestTrianglePipeline";
+    pipelineDesc.nextInChain = nullptr;
+    pipelineDesc.vertex = vertexState;
+    pipelineDesc.fragment = &fragmentState;
+    pipelineDesc.primitive = primitiveState;
+
+    RenderPipeline pipeline = context.GetDevice().CreateRenderPipeline(&pipelineDesc);
+    if (!pipeline)
+    {
+        std::println(stderr, "[velox][main] Failed to create render pipeline");
+        return -1;
+    }
+
+#ifndef __EMSCRIPTEN__
+    while (!glfwWindowShouldClose(context.GetNativeWindow()))
+    {
+        glfwPollEvents();
+        Render(context.GetSurface(), context.GetDevice(), context.GetQueue(), pipeline);
+        context.Present();
+        context.GetInstance().ProcessEvents();
+    }
+#else
+    emscripten_set_main_loop_arg([](void* arg)
+    {
+        Context* context = static_cast<Context*>(arg);
+        Render(context->GetSurface(), context->GetDevice(), context->GetQueue(), pipeline);
+        context->Present();
+        context->GetInstance().ProcessEvents();
+    }, &context, 0, false);
+#endif
     
     return 0;
 }
+

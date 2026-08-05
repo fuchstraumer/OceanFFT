@@ -38,6 +38,7 @@ std::string GetSystemDirectory()
 
 namespace
 {
+    
     static const std::unordered_map<wgpu::ErrorType, std::string_view> ErrorTypeStrings
     {
         { wgpu::ErrorType::NoError, "No Error" },
@@ -123,6 +124,94 @@ Context::~Context()
     glfwDestroyWindow(nativeWindow);
     glfwTerminate();
 #endif
+}
+
+
+
+ResizeStatus Context::Resize(uint32_t width, uint32_t height)
+{
+    if (width == surfaceConfig.width && height == surfaceConfig.height)
+    {
+        return ResizeStatus::Unchanged;
+    }
+    else if (width == 0 || height == 0)
+    {
+        return ResizeStatus::Minimized;
+    }
+    else
+    {
+        surfaceConfig.width = width;
+        surfaceConfig.height = height;
+        surface.Configure(&surfaceConfig);
+        return ResizeStatus::Resized;
+    }
+}
+
+wgpu::TextureView Context::AcquireNextFrame()
+{
+    wgpu::SurfaceTexture surfaceTexture{};
+    surface.GetCurrentTexture(&surfaceTexture);
+
+    switch (surfaceTexture.status)
+    {
+    case wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal:
+        return surfaceTexture.texture.CreateView();
+    case wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal:
+        std::println(stderr, "[velox][context] Next frame acquisition returned SuccessSuboptimal");
+        return surfaceTexture.texture.CreateView();
+    default:
+        // todo: this should be a std::expected return
+        return wgpu::TextureView{};
+    }
+}
+
+void Context::Present()
+{
+#ifndef __EMSCRIPTEN__
+    // Emscripten presents implicitly at the end of each browser frame;
+    // calling Present() there is a validation error.
+    surface.Present();
+#endif
+}
+
+wgpu::Instance& Context::GetInstance() noexcept
+{
+    return instance;
+}
+
+wgpu::Adapter& Context::GetAdapter() noexcept
+{
+    return adapter;
+}
+
+wgpu::Device& Context::GetDevice() noexcept
+{
+    return device;
+}
+
+wgpu::Queue& Context::GetQueue() noexcept
+{
+    return queue;
+}
+
+wgpu::Surface& Context::GetSurface() noexcept
+{
+    return surface;
+}
+
+wgpu::TextureFormat Context::GetSurfaceFormat() const noexcept
+{
+    return surfaceConfig.format;
+}
+
+bool Context::HasFeature(wgpu::FeatureName feature) const noexcept
+{
+    return device.HasFeature(feature);
+}
+
+GLFWwindow* Context::GetNativeWindow() const noexcept
+{
+    return nativeWindow;
 }
 
 std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCreateInfo& createInfo)
@@ -315,6 +404,7 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     auto format_iter = std::find_if(capabilities.formats,
                                     capabilities.formats + capabilities.formatCount,
                                     format_match);
+    wgpu::TextureFormat surfaceFormat{};
     if (format_iter != capabilities.formats + capabilities.formatCount)
     {
         surfaceFormat = *format_iter;
@@ -340,56 +430,4 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     surface.Configure(&surfaceConfig);
 }
 
-ResizeStatus Context::Resize(uint32_t width, uint32_t height)
-{
-    if (width == surfaceConfig.width && height == surfaceConfig.height)
-    {
-        return ResizeStatus::Unchanged;
-    }
-    else if (width == 0 || height == 0)
-    {
-        return ResizeStatus::Minimized;
-    }
-    else
-    {
-        surfaceConfig.width = width;
-        surfaceConfig.height = height;
-        surface.Configure(&surfaceConfig);
-        return ResizeStatus::Resized;
-    }
-}
-
-wgpu::TextureView Context::AcquireNextFrame()
-{
-    wgpu::SurfaceTexture surfaceTexture{};
-    surface.GetCurrentTexture(&surfaceTexture);
-
-    switch (surfaceTexture.status)
-    {
-    case wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal:
-        return surfaceTexture.texture.CreateView();
-    case wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal:
-        std::println(stderr, "[velox][context] Next frame acquisition returned SuccessSuboptimal");
-        return surfaceTexture.texture.CreateView();
-    default:
-        // todo: this should be a std::expected return
-        return wgpu::TextureView{};
-    }
-}
-
-void Context::Present()
-{
-#ifndef __EMSCRIPTEN__
-    // Emscripten presents implicitly at the end of each browser frame;
-    // calling Present() there is a validation error.
-    surface.Present();
-#endif
-}
-
-bool Context::HasFeature(wgpu::FeatureName feature) const noexcept
-{
-    return device.HasFeature(feature);
-}
-
 } // namespace velox
-
