@@ -84,10 +84,10 @@ lut_resolution_settings:
 # Controls where output files are written to -- paths relative to project_root
 script_output_paths:
   - name: project_root
-    path: "D:/OceanFFT"
+    path: "D:/VeloxRhi"
   - name: cpp_header_path
     path: "include/generated"
   - name: cpp_source_path
     path: "src/generated"
   - name: shaders_path
-    path: "shaders/compute"
+    path: "assets/shaders/compute"
