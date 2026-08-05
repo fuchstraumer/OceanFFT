@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(OceanFFT C CXX)
+project(VeloxRhi C CXX)
 
 # cmake/ contains our own FindVulkanHeaders.cmake; must be set before any find_package calls
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -94,9 +94,9 @@ add_custom_command(
     VERBATIM)
 
 # Ensures slang file generates even if OceanFFT target isn't built first
-add_custom_target(OceanFFT_GeneratedSources ALL DEPENDS ${OCEAN_FFT_GENERATED_OUTPUTS})
+add_custom_target(OceanFft_GeneratedSources ALL DEPENDS ${OCEAN_FFT_GENERATED_OUTPUTS})
 
-set(OceanFFT_Headers
+set(VeloxRhi_Headers
     "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/DonelanBannerNormLUT.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/generated/SinCosLUT.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Application.hpp"
@@ -105,7 +105,7 @@ set(OceanFFT_Headers
     "${CMAKE_CURRENT_SOURCE_DIR}/include/ShaderUtils.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/VeloxErrors.hpp")
 
-set(OceanFFT_SOURCES
+set(VeloxRhi_SOURCES
     main.cpp
     ${IMGUI_SOURCES}
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Application.cpp"
@@ -115,31 +115,31 @@ set(OceanFFT_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/DonelanBannerNormLUT.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generated/SinCosLUT.cpp")
 
-add_executable(OceanFFT ${OceanFFT_SOURCES} ${OceanFFT_Headers})
-add_dependencies(OceanFFT OceanFFT_GeneratedSources)
-target_include_directories(OceanFFT PRIVATE
+add_executable(VeloxRhi ${VeloxRhi_SOURCES} ${VeloxRhi_Headers})
+add_dependencies(VeloxRhi OceanFft_GeneratedSources)
+target_include_directories(VeloxRhi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
 
 if (NOT EMSCRIPTEN)
-    target_include_directories(OceanFFT PRIVATE
+    target_include_directories(VeloxRhi PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glfw/include
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/dawn/include
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/slang/include)
 endif()
 # set required definition for imgui backend (dawn)
-target_compile_definitions(OceanFFT PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
+target_compile_definitions(VeloxRhi PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
 
 include(CheckIPOSupported)
 check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
 if (ipo_supported)
-    set_target_properties(OceanFFT PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_target_properties(VeloxRhi PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 else()
     message(WARNING "IPO is not supported: ${ipo_error}")
 endif()
 
 if (EMSCRIPTEN)
-    target_compile_options(OceanFFT PRIVATE
+    target_compile_options(VeloxRhi PRIVATE
         "--use-port=emdawnwebgpu" # Use the emdawnwebgpu port for WebGPU support
         "-O3"                     # Maximum optimization
         "-flto"                   # Link-time optimization (needed at compile stage)
@@ -147,7 +147,7 @@ if (EMSCRIPTEN)
         "-fno-rtti"               # Disable RTTI if not needed (reduce binary size)
         "-fno-exceptions"         # Disable exceptions if not needed (reduce binary size)
     )
-    target_link_options(OceanFFT PRIVATE
+    target_link_options(VeloxRhi PRIVATE
         "--use-port=emdawnwebgpu"
         "-O3"                                    # Maximum optimization
         "-flto"                                  # Link-time optimization
@@ -164,11 +164,11 @@ if (EMSCRIPTEN)
         "-sSIMD=1"                               # Enable SIMD support
         "--closure=1"                            # Enable Closure Compiler for JS minification
         "--closure-args=--externs=node_modules/webgpu/webgpu-closure-externs.js")
-    target_link_libraries(OceanFFT PRIVATE emdawnwebgpu_cpp webgpu_glfw)
-    set_target_properties(OceanFFT PROPERTIES SUFFIX ".html")
+    target_link_libraries(VeloxRhi PRIVATE emdawnwebgpu_cpp webgpu_glfw)
+    set_target_properties(VeloxRhi PROPERTIES SUFFIX ".html")
 else()
-    target_link_libraries(OceanFFT PRIVATE webgpu_dawn glfw webgpu_glfw webgpu_cpp)
+    target_link_libraries(VeloxRhi PRIVATE webgpu_dawn glfw webgpu_glfw webgpu_cpp)
     if (WIN32)
-        target_link_libraries(OceanFFT PRIVATE dawn_native magic_enum::magic_enum)
+        target_link_libraries(VeloxRhi PRIVATE dawn_native magic_enum::magic_enum)
     endif()
 endif()
