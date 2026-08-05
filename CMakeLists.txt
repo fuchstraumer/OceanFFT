@@ -56,14 +56,13 @@ if (NOT EMSCRIPTEN)
     add_subdirectory(third_party/dawn SYSTEM EXCLUDE_FROM_ALL)
 endif()
 
-
 set(MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF)
 set(MAGIC_ENUM_OPT_BUILD_TESTS OFF)
 set(MAGIC_ENUM_OPT_INSTALL OFF)
 add_subdirectory(third_party/magic_enum)
 
 if(NOT EMSCRIPTEN)
-    add_subdirectory(shaders)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_cooker")
 endif()
 
 # rope together source files for imgui
@@ -84,12 +83,12 @@ set(OCEAN_FFT_GENERATED_OUTPUTS
 
 add_custom_command(
     OUTPUT ${OCEAN_FFT_GENERATED_OUTPUTS}
-    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ocean_fft_support.py"
-        --config "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/ocean_fft_support.py"
+        --config "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/OceanFftConfig.yaml"
     DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/ocean_fft_support.py"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/OceanFftConfig.yaml"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/ocean_fft_support.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts/OceanFftConfig.yaml"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tools/scripts"
     COMMENT "Generating OceanFFT support files..."
     VERBATIM)
 
