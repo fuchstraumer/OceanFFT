@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 project(VeloxRhi C CXX)
 
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # cmake/ contains our own FindVulkanHeaders.cmake; must be set before any find_package calls
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -13,12 +20,6 @@ if (NOT EMSCRIPTEN)
     set(VulkanHeaders_INCLUDE_DIR ${Vulkan_INCLUDE_DIR} CACHE PATH "" FORCE)
 endif()
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # One should really not be modifying the CMAKE_CXX_FLAGS directly,
 # but I need to make sure these are passed down to child projects
@@ -31,7 +32,9 @@ if (MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP /bigobj /arch:AVX2 /Gy")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Clang specific flags
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2")
+    if (NOT EMSCRIPTEN)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mavx2")
+    endif()
     if (CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
         # emulate bigobj flag as, again, slang can break on this
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj")
@@ -49,12 +52,12 @@ if (NOT EMSCRIPTEN)
     set_target_properties(glfw PROPERTIES FOLDER "third_party")
 
     include(cmake/ConfigureSlang.cmake)
-    add_subdirectory(third_party/slang SYSTEM EXCLUDE_FROM_ALL)
+    add_subdirectory(third_party/slang EXCLUDE_FROM_ALL)
     organize_slang_targets()
-    
-    include(cmake/ConfigureDawn.cmake)
-    add_subdirectory(third_party/dawn SYSTEM EXCLUDE_FROM_ALL)
 endif()
+
+include(cmake/ConfigureDawn.cmake)
+add_subdirectory(third_party/dawn EXCLUDE_FROM_ALL)
 
 set(MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF)
 set(MAGIC_ENUM_OPT_BUILD_TESTS OFF)
@@ -139,7 +142,6 @@ endif()
 
 if (EMSCRIPTEN)
     target_compile_options(VeloxRhi PRIVATE
-        "--use-port=emdawnwebgpu" # Use the emdawnwebgpu port for WebGPU support
         "-O3"                     # Maximum optimization
         "-flto"                   # Link-time optimization (needed at compile stage)
         "-msimd128"               # SIMD support
@@ -147,7 +149,6 @@ if (EMSCRIPTEN)
         "-fno-exceptions"         # Disable exceptions if not needed (reduce binary size)
     )
     target_link_options(VeloxRhi PRIVATE
-        "--use-port=emdawnwebgpu"
         "-O3"                                    # Maximum optimization
         "-flto"                                  # Link-time optimization
         "-sUSE_GLFW=3"                           # Use Emscripten's GLFW port
@@ -159,11 +160,8 @@ if (EMSCRIPTEN)
         "-sASSERTIONS=0"                         # Disable assertions in release
         "-sSTACK_SIZE=1MB"                       # Adjust if needed
         "-sINITIAL_MEMORY=64MB"                  # Adjust based on your needs
-        "-sMAXIMUM_MEMORY=512MB"                 # Cap memory usage
-        "-sSIMD=1"                               # Enable SIMD support
-        "--closure=1"                            # Enable Closure Compiler for JS minification
-        "--closure-args=--externs=node_modules/webgpu/webgpu-closure-externs.js")
-    target_link_libraries(VeloxRhi PRIVATE emdawnwebgpu_cpp webgpu_glfw)
+        "--closure=1")                            # Enable Closure Compiler for JS minification
+    target_link_libraries(VeloxRhi PRIVATE emdawnwebgpu_cpp webgpu_glfw magic_enum::magic_enum)
     set_target_properties(VeloxRhi PROPERTIES SUFFIX ".html")
 else()
     target_link_libraries(VeloxRhi PRIVATE webgpu_dawn glfw webgpu_glfw webgpu_cpp)

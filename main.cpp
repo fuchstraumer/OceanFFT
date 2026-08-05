@@ -3,6 +3,10 @@
 #include <string_view>
 #include <span>
 #include "GLFW/glfw3.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
 
 constexpr const char* const shaderSource = R"(
 @vertex
@@ -46,6 +50,24 @@ void Render(wgpu::Surface& surface, wgpu::Device& device, wgpu::Queue& queue, wg
     wgpu::CommandBuffer commandBuffer = encoder.Finish();
     queue.Submit(1, &commandBuffer);
 }
+
+struct MainLoopState
+{
+    velox::Context* context;
+    wgpu::RenderPipeline pipeline;
+};
+
+#ifdef __EMSCRIPTEN__
+void EmMainLoopArg(void* arg)
+{
+    using namespace velox;
+    MainLoopState* mainLoopState = static_cast<MainLoopState*>(arg);
+    velox::Context* context = mainLoopState->context;
+    Render(context->GetSurface(), context->GetDevice(), context->GetQueue(), mainLoopState->pipeline);
+    context->Present();
+    context->GetInstance().ProcessEvents();
+}
+#endif
 
 int main()
 {
@@ -121,13 +143,8 @@ int main()
         context.GetInstance().ProcessEvents();
     }
 #else
-    emscripten_set_main_loop_arg([](void* arg)
-    {
-        Context* context = static_cast<Context*>(arg);
-        Render(context->GetSurface(), context->GetDevice(), context->GetQueue(), pipeline);
-        context->Present();
-        context->GetInstance().ProcessEvents();
-    }, &context, 0, false);
+    MainLoopState mainLoopState{ &context, pipeline };
+    emscripten_set_main_loop_arg(EmMainLoopArg, &mainLoopState, 0, false);
 #endif
     
     return 0;

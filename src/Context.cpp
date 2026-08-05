@@ -209,10 +209,12 @@ bool Context::HasFeature(wgpu::FeatureName feature) const noexcept
     return device.HasFeature(feature);
 }
 
+#ifndef __EMSCRIPTEN__
 GLFWwindow* Context::GetNativeWindow() const noexcept
 {
     return nativeWindow;
 }
+#endif
 
 std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCreateInfo& createInfo)
 {
@@ -328,7 +330,7 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
 std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& createInfo)
 {
     wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasDesc{};
-    canvasDesc.selector = createInfo.CanvasSelector.c_str();
+    canvasDesc.selector = createInfo.CanvasSelector.data();
     wgpu::SurfaceColorManagement colorDesc{};
     colorDesc.colorSpace = createInfo.PreferredColorSpace;
     // todo: what is Extended tonemapping? do we not have the ability to run our own? is this mobile weirdness?
