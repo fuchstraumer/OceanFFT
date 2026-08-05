@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label" : "Serve VeloxRhi demo with EmRun",
+            "type" : "shell",
+            "command" : "emrun",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new"
+            },
+            "args" : [
+                "--no_browser",
+                "--port", "8080",
+                "VeloxRhi.html"
+            ],
+            "options": {
+                "cwd": "${command:cmake.getLaunchTargetDirectory}"
+            },
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern" : {
+                    "regexp": "^S"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern" : ".*",
+                    // Catches both "Web server root directory:" and "Now listening at..."
+                    "endsPattern": ".*(Web server root directory|Now listening at|Serving HTTP).*"
+                }
+            }
+        }
+    ]
+}

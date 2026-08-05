@@ -8,9 +8,7 @@
 #include <string_view>
 #include <span>
 
-#ifndef __EMSCRIPTEN__
 struct GLFWwindow;
-#endif
 
 namespace velox
 {
@@ -38,9 +36,6 @@ namespace velox
         // todo: how does HDR support actually work? we'll need a tonemapper too....
         wgpu::PredefinedColorSpace PreferredColorSpace{ wgpu::PredefinedColorSpace::SRGB };
         wgpu::PresentMode PreferredPresentationMode{ wgpu::PresentMode::Fifo };
-    #ifdef __EMSCRIPTEN__
-        std::string_view CanvasSelector{ "#canvas" };
-    #endif
     };
 
     /**
@@ -59,11 +54,7 @@ namespace velox
         Context& operator=(const Context&) = delete;
     public:
 
-    #ifdef __EMSCRIPTEN__
-        explicit Context(const ContextCreateInfo& createInfo);
-    #else
         Context(const ContextCreateInfo& createInfo);
-    #endif
         ~Context();
 
         ResizeStatus Resize(uint32_t width, uint32_t height);
@@ -78,23 +69,15 @@ namespace velox
         wgpu::TextureFormat GetSurfaceFormat() const noexcept;
 
         bool HasFeature(wgpu::FeatureName feature) const noexcept;
-
-    #ifndef __EMSCRIPTEN__
         GLFWwindow* GetNativeWindow() const noexcept;
-    #endif
 
     private:
 
         std::expected<wgpu::Instance, RhiError> requestInstance(const ContextCreateInfo& createInfo);
         std::expected<wgpu::Adapter, RhiError> requestAdapter(const ContextCreateInfo& createInfo);
         std::expected<wgpu::Device, RhiError> requestDevice(const ContextCreateInfo& createInfo);
-    #ifdef __EMSCRIPTEN__
-        std::expected<wgpu::Surface, RhiError> createSurface(const ContextCreateInfo& createInfo);
-    #else
-        // need to make sure a valid GLFWwindow* is created before we create the surface
         std::expected<GLFWwindow*, RhiError> createNativeWindow(const ContextCreateInfo& createInfo);
         std::expected<wgpu::Surface, RhiError> createSurface(const ContextCreateInfo& createInfo);
-    #endif
 
         void configureSurface(const ContextCreateInfo& createInfo);
 
@@ -102,9 +85,8 @@ namespace velox
         wgpu::Adapter adapter;
         wgpu::Device device;
         wgpu::Queue queue;
-#ifndef __EMSCRIPTEN__
         GLFWwindow* nativeWindow{ nullptr };
-#endif
+
         wgpu::Surface surface;
         // we store the surface config to make reconfiguring not need the whole create info
         wgpu::SurfaceConfiguration surfaceConfig{};

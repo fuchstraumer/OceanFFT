@@ -131,14 +131,6 @@ endif()
 # set required definition for imgui backend (dawn)
 target_compile_definitions(VeloxRhi PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_DAWN)
 
-include(CheckIPOSupported)
-check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
-if (ipo_supported)
-    set_target_properties(VeloxRhi PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-else()
-    message(WARNING "IPO is not supported: ${ipo_error}")
-endif()
-
 set(VeloxRhi_Shaders
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/OceanFFT.slang"
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/compute/IfftPermute.slang"
@@ -159,22 +151,24 @@ source_group("rhi\\generated" FILES ${OCEAN_FFT_GENERATED_OUTPUTS})
 
 if (EMSCRIPTEN)
     target_compile_options(VeloxRhi PRIVATE
-        "-O3"                     # Maximum optimization
-        "-flto"                   # Link-time optimization (needed at compile stage)
-        "-fno-rtti"               # Disable RTTI if not needed (reduce binary size)
-        "-fno-exceptions"         # Disable exceptions if not needed (reduce binary size)
+        "-g"
+        "-O1"
+        "-flto"
+        "-fno-rtti"
+        "-fno-exceptions"
+        "-msimd128"
     )
     target_link_options(VeloxRhi PRIVATE
-        "-O3"                                    # Maximum optimization
+        "-g"
+        "-sASYNCIFY=1"
+        "-O1"
+        "-flto"
+        "-sEXIT_RUNTIME=1"
+        "-sNO_FILESYSTEM=1"
         "-sWASM=1"
-        "-flto"                                  # Link-time optimization
+        "-sMALLOC=emmalloc"
         "-sUSE_GLFW=3"                           # Use Emscripten's GLFW port
-        "-sALLOW_MEMORY_GROWTH=0"                # Static memory allocation
-        "-sNO_EXIT_RUNTIME=0"
-        "-sNO_FILESYSTEM=1"                         # No filesystem support
-        "-sMALLOC=emmalloc")                      # Smaller malloc implementation
-        #"--closure=1"                            # Enable Closure Compiler for JS minification
-        #"--closure-args=--externs=${CMAKE_CURRENT_SOURCE_DIR}/tools/js/veloxrhi-externs.js")
+    )
     target_link_libraries(VeloxRhi PRIVATE emdawnwebgpu_cpp webgpu_glfw magic_enum::magic_enum)
     set_target_properties(VeloxRhi PROPERTIES SUFFIX ".html")
 else()

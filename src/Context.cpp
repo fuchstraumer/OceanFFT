@@ -2,11 +2,9 @@
 #include <format>
 #include <iostream>
 #include <print>
-#ifndef __EMSCRIPTEN__
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <webgpu/webgpu_glfw.h>
-#endif
 #include <unordered_map>
 #include <algorithm>
 #include "magic_enum/magic_enum.hpp"
@@ -87,15 +85,9 @@ namespace
 namespace velox
 {
 
-#ifdef __EMSCRIPTEN__
 Context::Context(const ContextCreateInfo& createInfo)
-#else
-Context::Context(const ContextCreateInfo& createInfo)
-#endif
 {
-#ifndef __EMSCRIPTEN__
     instance = ValidOrExit(requestInstance(createInfo));
-#endif
 
     adapter = ValidOrExit(requestAdapter(createInfo));
     device = ValidOrExit(requestDevice(createInfo));
@@ -108,22 +100,15 @@ Context::Context(const ContextCreateInfo& createInfo)
     }
     std::println(stderr, "[velox][context] Device enabled features:{}", enabledFeatureNames);
 
-#ifdef __EMSCRIPTEN__
-    surface = ValidOrExit(createSurface(createInfo));
-#else
-    // createnativewindow() also initializes glfw, mostly just to keep code tidy
     nativeWindow = ValidOrExit(createNativeWindow(createInfo));
     surface = ValidOrExit(createSurface(createInfo));
-#endif
     configureSurface(createInfo);
 }
 
 Context::~Context()
 {
-#ifndef __EMSCRIPTEN__
     glfwDestroyWindow(nativeWindow);
     glfwTerminate();
-#endif
 }
 
 
@@ -240,7 +225,7 @@ std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCr
     {
         return std::unexpected(RhiError::AdapterRequestFailed);
     }
-    return instance;
+    return std::move(instance);
 }
 
 std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCreateInfo& createInfo)
@@ -254,8 +239,6 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
 #endif
     options.featureLevel = createInfo.FeatureLevel;
     options.powerPreference = createInfo.PowerPreference;
-    // todo: compatible surface parameter. unused right now, but I think it could let us query for HDR backbuffer support?
-    // diamonddogs does this through glfw and win32 api calls, but I think we can do it through wgpu directly if we pass the surface here.
 
     wgpu::Adapter result_adapter;
     wgpu::Future future = instance.RequestAdapter(&options, wgpu::CallbackMode::WaitAnyOnly,
@@ -326,29 +309,6 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
     return result_device;
 }
 
-#ifdef __EMSCRIPTEN__
-std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& createInfo)
-{
-    wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasDesc{};
-    canvasDesc.selector = createInfo.CanvasSelector.data();
-    wgpu::SurfaceColorManagement colorDesc{};
-    colorDesc.colorSpace = createInfo.PreferredColorSpace;
-    // todo: what is Extended tonemapping? do we not have the ability to run our own? is this mobile weirdness?
-    colorDesc.toneMappingMode = wgpu::ToneMappingMode::Standard;
-    // make sure chaining is set right
-    canvasDesc.nextInChain = &colorDesc;
-    colorDesc.nextInChain = nullptr;
-
-    wgpu::SurfaceDescriptor surfaceDesc{};
-    surfaceDesc.nextInChain = &canvasDesc;
-    surface = instance.CreateSurface(&surfaceDesc);
-    if (!surface)
-    {
-        return std::unexpected(RhiError::SurfaceConfigurationFailed);
-    }
-    return surface;
-}
-#else
 std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCreateInfo& createInfo)
 {
     // todo: We have a bunch of nice example code for how to set backbuffer bit depth and color stuff in DiamondDogs,
@@ -379,7 +339,6 @@ std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCr
     return window;
 }
 
-
 std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& /*createInfo*/)
 {
     // todo: this GLFW shim sets the descriptor based on GLFW hints, but for things like colorspaces this won't pass through
@@ -391,7 +350,6 @@ std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreat
     }
     return surface;
 }
-#endif
 
 void Context::configureSurface(const ContextCreateInfo& createInfo)
 {

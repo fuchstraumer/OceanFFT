@@ -16,6 +16,15 @@
             "console": "integratedTerminal"
         },
         {
+            "name" : "Launch/Debug Engine [Web]",
+            "type" : "chrome",
+            "request": "launch",
+            "url" : "http://localhost:8080/${command:cmake.launchTargetFilename}",
+            "webRoot": "${workspaceFolder}",
+            "preLaunchTask": "Serve VeloxRhi demo with EmRun",
+            "runtimeArgs": [ "--enable-unsafe-webgpu" ]
+        },
+        {
             "name": "Launch Shader Compiler [Release]",
             "type": "cppvsdbg",
             "request": "launch",

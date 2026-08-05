@@ -144,7 +144,7 @@ int main()
     }
 #else
     MainLoopState mainLoopState{ &context, pipeline };
-    emscripten_set_main_loop_arg(EmMainLoopArg, &mainLoopState, 0, false);
+    emscripten_set_main_loop_arg(EmMainLoopArg, &mainLoopState, 0, true);
 #endif
     
     return 0;
