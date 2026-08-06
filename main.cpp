@@ -7,6 +7,7 @@
 #include <emscripten.h>
 #include <emscripten/html5.h>
 #endif
+#include "HdrTestPatternShader.hpp"
 
 constexpr const char* const shaderSource = R"(
 struct VertexOutput
@@ -41,23 +42,83 @@ fn VsMain(@builtin(vertex_index) inVertexIndex : u32) -> VertexOutput
 const kExposure : f32 = 4.0;
 const kTonemap : u32 = 2u; // 0 = raw/hard-clip, 1 = Reinhard, 2 = crude ACES-ish
 
+fn tonemap(c : vec3<f32>, mode : u32) -> vec3<f32>
+{
+    var result : vec3<f32>;
+    if (mode == 0u)
+    {
+        result = c;
+    }
+    else if (mode == 1u)
+    {
+        result = c / (c + vec3<f32>(1.0));
+    }
+    else if (mode == 2u)
+    {
+        result = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    return result;
+}
+
 @fragment
 fn FsMain(in: VertexOutput) -> @location(0) vec4<f32>
 {
     var c = in.VertexColor.rgb * kExposure;
 
-    if (kTonemap == 1u)
-    {
-        c = c / (c + vec3<f32>(1.0));
-    } 
-    else if (kTonemap == 2u)
-    {
-        c = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
-    }
+    c = tonemap(c, kTonemap);
 
     return vec4<f32>(c, in.VertexColor.a);
 }
 )";
+
+struct UniformBuffer
+{
+    UniformBuffer(wgpu::Device& device, size_t size, std::string_view label = {})
+    {
+        wgpu::BufferDescriptor bufferDesc = getBufferDescriptor(size, label);
+        buffer = device.CreateBuffer(&bufferDesc);
+        if (!buffer)
+        {
+            std::println(stderr, "[velox][UniformBuffer] Failed to create uniform buffer");
+            assert(false);
+        }
+    }
+
+    UniformBuffer(wgpu::Device& device, size_t size, const void* data)
+    {
+        wgpu::BufferDescriptor bufferDesc = getBufferDescriptor(size, "UniformBuffer");
+        bufferDesc.mappedAtCreation = true;
+        buffer = device.CreateBuffer(&bufferDesc);
+        if (!buffer)
+        {
+            std::println(stderr, "[velox][UniformBuffer] Failed to create uniform buffer");
+            assert(false);
+        }
+        void* mappedData = buffer.GetMappedRange();
+        std::memcpy(mappedData, data, size);
+        buffer.Unmap();
+    }
+
+    void Update(wgpu::Queue& queue, const void* data, size_t size)
+    {
+        queue.WriteBuffer(buffer, 0, data, size);
+    }
+
+    wgpu::Buffer buffer{};
+private:
+    wgpu::BufferDescriptor getBufferDescriptor(size_t size, std::string_view label)
+    {
+        wgpu::BufferDescriptor bufferDesc{};
+        bufferDesc.size = size;
+        bufferDesc.usage = wgpu::BufferUsage::Uniform |
+                           wgpu::BufferUsage::MapRead |
+                           wgpu::BufferUsage::MapWrite;
+
+        bufferDesc.mappedAtCreation = false;
+        bufferDesc.label = label.data();
+        return bufferDesc;
+    }
+};
 
 void Render(wgpu::Surface& surface, wgpu::Device& device, wgpu::Queue& queue, wgpu::RenderPipeline& pipeline)
 {
@@ -112,19 +173,21 @@ int main()
         wgpu::FeatureName::Subgroups
     };
     std::span<wgpu::FeatureName> requestedFeaturesSpan(requestedFeatures);
+    createInfo.InitialWidth = 1280;
+    createInfo.InitialHeight = 720;
     createInfo.RequiredFeatures = requestedFeaturesSpan;
     createInfo.FeatureLevel = wgpu::FeatureLevel::Compatibility;
     createInfo.PowerPreference = wgpu::PowerPreference::HighPerformance;
-    createInfo.PreferredSurfaceFormat = wgpu::TextureFormat::BGRA8Unorm;
-    createInfo.PreferredColorSpace = wgpu::PredefinedColorSpace::SRGB;
-    createInfo.PreferredToneMappingMode = wgpu::ToneMappingMode::Standard;
+    createInfo.PreferredSurfaceFormat = wgpu::TextureFormat::RGBA16Float;
+    createInfo.PreferredColorSpace = wgpu::PredefinedColorSpace::DisplayP3;
+    createInfo.PreferredToneMappingMode = wgpu::ToneMappingMode::Extended;
     
     Context context(createInfo);
     // okay, lets try a basic triangle
     using namespace wgpu;
 
     ShaderSourceWGSL wgslSource{};
-    wgslSource.code = shaderSource;
+    wgslSource.code = hdrTestPatternShaderSource;
     ShaderModuleDescriptor shaderDesc{};
     shaderDesc.nextInChain = &wgslSource;
     ShaderModule shaderModule = context.GetDevice().CreateShaderModule(&shaderDesc);
@@ -167,6 +230,9 @@ int main()
         std::println(stderr, "[velox][main] Failed to create render pipeline");
         return -1;
     }
+
+    //HdrTestDebugParams hdrTestParams{};
+    //UniformBuffer hdrTestUniforms(context.GetDevice(), sizeof(HdrTestDebugParams), &hdrTestParams);
 
 #ifndef __EMSCRIPTEN__
     while (!glfwWindowShouldClose(context.GetNativeWindow()))
