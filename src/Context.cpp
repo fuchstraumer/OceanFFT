@@ -7,7 +7,10 @@
 #include <webgpu/webgpu_glfw.h>
 #include <unordered_map>
 #include <algorithm>
+#include <coroutine>
+#include <expected>
 #include "magic_enum/magic_enum.hpp"
+
 
 #if !defined(__EMSCRIPTEN__) && defined(_WIN32)
 #undef APIENTRY
@@ -34,10 +37,93 @@ std::string GetSystemDirectory()
 }
 #endif
 
+// no more sledgehammer of asyncify, we can use coroutines!
+constexpr static bool k_Asyncify = false;
+
+struct AdapterAwaitable
+{
+    wgpu::Instance instance;
+    wgpu::RequestAdapterOptions options;
+    std::expected<wgpu::Adapter, velox::RhiError> result;
+
+    // always suspend
+    constexpr bool await_ready() const noexcept
+    {
+        return false;
+    }
+
+    void await_suspend(std::coroutine_handle<> handle)
+    {
+        instance.RequestAdapter(&options, wgpu::CallbackMode::AllowSpontaneous,
+        [this, handle](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message)
+        {
+            if (status == wgpu::RequestAdapterStatus::Success)
+            {
+                result = adapter;
+            }
+            else
+            {
+                std::println(stderr, "[velox][context] RequestAdapter failed with status {} and message: {}", magic_enum::enum_name(status), std::string_view(message.data, message.length));
+                result = std::unexpected(velox::RhiError::AdapterRequestFailed);
+            }
+            handle.resume();
+        });
+    }
+
+    std::expected<wgpu::Adapter, velox::RhiError> await_resume() noexcept
+    {
+        return std::move(result);
+    }
+};
+
+struct DeviceAwaitable
+{
+    wgpu::Adapter adapter;
+    wgpu::DeviceDescriptor descriptor;
+    std::expected<wgpu::Device, velox::RhiError> result;
+
+    constexpr bool await_ready() const noexcept
+    {
+        return false;
+    }
+
+    void await_suspend(std::coroutine_handle<> handle)
+    {
+        adapter.RequestDevice(&descriptor, wgpu::CallbackMode::AllowSpontaneous,
+        [this, handle](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message)
+        {
+            if (status == wgpu::RequestDeviceStatus::Success)
+            {
+                result = device;
+            }
+            else
+            {
+                std::println(stderr, "[velox][context] RequestDevice failed with status {} and message: {}", magic_enum::enum_name(status), std::string_view(message.data, message.length));
+                result = std::unexpected(velox::RhiError::DeviceRequestFailed);
+            }
+            handle.resume();
+        });
+    }
+
+    std::expected<wgpu::Device, velox::RhiError> await_resume() noexcept
+    {
+        return std::move(result);
+    }
+
+    constexpr explicit operator bool() const noexcept
+    {
+        return result.has_value();
+    }
+
+    velox::RhiError error() const noexcept
+    {
+        return result.error();
+    }
+
+};
+
 namespace
 {
-    
-
     // todo: we should sink these somewhere more portable, and which could actually give us debug info in live clients maybe?
     [[noreturn]] void LogUncapturedError(
         [[maybe_unused]] const wgpu::Device&,
@@ -67,22 +153,55 @@ namespace velox
 
 Context::Context(const ContextCreateInfo& createInfo)
 {
+    // only these two objects aren't dependent on async work
     instance = ValidOrExit(requestInstance(createInfo));
-
-    adapter = ValidOrExit(requestAdapter(createInfo));
-    device = ValidOrExit(requestDevice(createInfo));
-    queue = device.GetQueue();
-    std::println(stderr, "[velox][context] Instance, Adapter, and Device online");
-    std::string enabledFeatureNames;
-    for (const auto& feature : createInfo.RequiredFeatures)
-    {
-        enabledFeatureNames += std::format(" {} |", magic_enum::enum_name(feature));
-    }
-    std::println(stderr, "[velox][context] Device enabled features:{}", enabledFeatureNames);
-
     nativeWindow = ValidOrExit(createNativeWindow(createInfo));
-    surface = ValidOrExit(createSurface(createInfo));
-    configureSurface(createInfo);
+}
+
+Task<std::expected<bool, RhiError>> Context::InitWebGPU(const ContextCreateInfo& createInfo)
+{
+    if (k_Asyncify)
+    {
+        wgpu::RequestAdapterOptions options = getAdapterOptions(createInfo);
+        auto adapterResult = co_await AdapterAwaitable{ instance, options };
+        if (!adapterResult)
+        {
+            co_return std::unexpected(adapterResult.error());
+        }
+
+        adapter = std::move(adapterResult.value());
+
+        wgpu::DeviceDescriptor deviceDesc = getDeviceDescriptor(createInfo);
+        auto deviceResult = co_await DeviceAwaitable{ adapter, deviceDesc };
+        if (!deviceResult)
+        {
+            co_return std::unexpected(deviceResult.error());
+        }
+
+        device = std::move(deviceResult.value());
+        queue = device.GetQueue();
+        surface = ValidOrExit(createSurface(createInfo));
+        configureSurface(createInfo);
+        std::println(stderr, "[velox][context] Instance, Adapter, and Device online");
+        co_return true;
+    }
+    else
+    {
+        adapter = ValidOrExit(requestAdapter(createInfo));
+        device = ValidOrExit(requestDevice(createInfo));
+        queue = device.GetQueue();
+        std::println(stderr, "[velox][context] Instance, Adapter, and Device online");
+        std::string enabledFeatureNames;
+        for (const auto& feature : createInfo.RequiredFeatures)
+        {
+            enabledFeatureNames += std::format(" {} |", magic_enum::enum_name(feature));
+        }
+        std::println(stderr, "[velox][context] Device enabled features:{}", enabledFeatureNames);
+        surface = ValidOrExit(createSurface(createInfo));
+        configureSurface(createInfo);
+        // in un-async mode, we can just co_return true to immediately finish the coroutine, as all work is done synchronously
+        co_return true;
+    }
 }
 
 Context::~Context()
@@ -90,8 +209,6 @@ Context::~Context()
     glfwDestroyWindow(nativeWindow);
     glfwTerminate();
 }
-
-
 
 ResizeStatus Context::Resize(uint32_t width, uint32_t height)
 {
@@ -208,7 +325,7 @@ std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCr
     return std::move(instance);
 }
 
-std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCreateInfo& createInfo)
+wgpu::RequestAdapterOptions Context::getAdapterOptions(const ContextCreateInfo& createInfo) const
 {
     wgpu::RequestAdapterOptions options{};
 #ifndef __EMSCRIPTEN__
@@ -219,7 +336,12 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
 #endif
     options.featureLevel = createInfo.FeatureLevel;
     options.powerPreference = createInfo.PowerPreference;
+    return options;
+}
 
+std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCreateInfo& createInfo)
+{
+    wgpu::RequestAdapterOptions options = getAdapterOptions(createInfo);
     wgpu::Adapter result_adapter;
     wgpu::Future future = instance.RequestAdapter(&options, wgpu::CallbackMode::WaitAnyOnly,
         [&result_adapter](wgpu::RequestAdapterStatus status, wgpu::Adapter result, wgpu::StringView message)
@@ -245,7 +367,7 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
     return result_adapter;
 }
 
-std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreateInfo& createInfo)
+wgpu::DeviceDescriptor Context::getDeviceDescriptor(const ContextCreateInfo& createInfo) const
 {
     wgpu::DeviceDescriptor deviceDesc{};
     deviceDesc.label = createInfo.ApplicationName;
@@ -261,7 +383,12 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
         deviceDesc.requiredFeatureCount = 0;
         deviceDesc.requiredFeatures = nullptr;
     }
+    return deviceDesc;
+}
 
+std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreateInfo& createInfo)
+{
+    wgpu::DeviceDescriptor deviceDesc = getDeviceDescriptor(createInfo);
     wgpu::Device result_device;
     wgpu::Future future = adapter.RequestDevice(&deviceDesc, wgpu::CallbackMode::WaitAnyOnly,
         [&result_device](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message)

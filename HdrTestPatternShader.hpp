@@ -6,13 +6,7 @@
 // triangle, so the whole viewport becomes the test chart.
 //
 // Layout, bottom (uv.y=0) to top (uv.y=1):
-//   Band 0 [0.00, 0.25): Gamut swatches — black, white, R, G, B, C, M, Y at
-//                         full saturation. This is the band that will show
-//                         a hue/appearance shift when you flip colorSpace
-//                         between "srgb" and "display-p3", since fully
-//                         saturated primaries are exactly where the two
-//                         gamuts disagree most.
-//   Band 1 [0.25, 0.50): Four stacked ramps (R, G, B, White, top to bottom
+//   Band 1 [0.0, 0.3333): Four stacked ramps (R, G, B, White, top to bottom
 //                         within the band) from 0 to kExposureMax.
 //                         A thin inverted-color tick mark is drawn at the
 //                         x position where the ramp value crosses 1.0 —
@@ -20,12 +14,12 @@
 //                         would start clipping. In "extended" mode you
 //                         should see the ramp keep climbing past that tick
 //                         instead of flattening out.
-//   Band 2 [0.50, 0.75): Discrete step chart — fixed swatches at
+//   Band 2 [0.3333, 0.6667): Discrete step chart — fixed swatches at
 //                         {0, .25, .5, .75, 1, 1.25, 1.5, 2, 3, 4}. The
 //                         swatch at exactly 1.0 gets a red border so you
 //                         can find the SDR reference-white patch at a
 //                         glance and see which neighbors are above/below it.
-//   Band 3 [0.75, 1.00): Live gamma-vs-linear interpolation test — a
+//   Band 3 [0.6667, 1.00): Live gamma-vs-linear interpolation test — a
 //                         red->green->blue crossfade computed either as a
 //                         naive lerp of the encoded values (interpSpace=0,
 //                         what your original triangle was always doing) or
@@ -33,7 +27,7 @@
 //                         (interpSpace=1). Toggle kInterpSpace at
 //                         runtime to A/B them directly.
 //
-// Faint gray separator lines are drawn at each band boundary. 
+// Faint gray separator lines are drawn at each band boundary.
 #include <cstdint>
 
 constexpr const char* const hdrTestPatternShaderSource = R"(
@@ -46,6 +40,8 @@ struct VertexOutput
 const kExposureMax : f32 = 2.0;
 const kTonemapMode : u32 = 0u; // 0 = raw/hard-clip, 1 = Reinhard, 2 = crude ACES-ish
 const kTransferFunctionMode : u32 = 2u; // 0 = linear, 1 = EOTF, 2 = OETF
+const kBand1Height : f32 = 0.333333333;
+const kBand2Height : f32 = 0.666666667;
 
 @vertex
 fn VsMain(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput
@@ -56,6 +52,62 @@ fn VsMain(@builtin(vertex_index) vertexIndex : u32) -> VertexOutput
     output.Position = vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
     output.uv = uv;
     return output;
+}
+
+fn agxDefaultContrastApprox(c : vec3<f32>) -> vec3<f32>
+{
+    let x2 = c * c;
+    let x4 = x2 * x2;
+    return 15.5 * x4 * x2
+           - 40.14 * x4 * c
+           + 31.96 * x4
+           - 6.868 * x2 * c
+           + 0.4298 * x2
+           + 0.1191 * c
+           - 0.00232;
+}
+
+fn AgXTonemap(c : vec3<f32>) -> vec3<f32>
+{
+    // declare rec709 to AgX transformation matrix
+    let rec709ToAgX = mat3x3<f32>(
+        vec3<f32>(0.842479062253094, 0.0423282422610123, 0.0423756549057051),
+        vec3<f32>(0.0784335999999992,  0.878468636469772,  0.0784336),
+        vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104)
+    );
+    let minEV = -12.47393;
+    let maxEV = 4.026069;
+    var val : vec3<f32>;
+    val = linearToSrgb(c);
+    val = transpose(rec709ToAgX) * val;
+    val = clamp(log2(val), vec3<f32>(minEV), vec3<f32>(maxEV));
+    val = (val - minEV) / (maxEV - minEV);
+    val = agxDefaultContrastApprox(val);
+    let AgXToRec709 = mat3x3<f32>(
+        vec3<f32>(1.19687900512017, -0.0528968517574562, -0.0529716355144438),
+        vec3<f32>(-0.0980208811401368, 1.15190312990417, -0.0980434501171241),
+        vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116)
+    );
+    val = transpose(AgXToRec709) * val;
+    val = srgbToLinear(val);
+    return val;
+}
+
+fn aces_tone_map(hdr: vec3<f32>) -> vec3<f32> {
+    let m1 = mat3x3(
+        0.59719, 0.07600, 0.02840,
+        0.35458, 0.90834, 0.13383,
+        0.04823, 0.01566, 0.83777,
+    );
+    let m2 = mat3x3(
+        1.60475, -0.10208, -0.00327,
+        -0.53108,  1.10813, -0.07276,
+        -0.07367, -0.00605,  1.07602,
+    );
+    let v = m1 * hdr;
+    let a = v * (v + 0.0245786) - 0.000090537;
+    let b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    return m2 * (a / b);
 }
 
 fn tonemap(c : vec3<f32>, mode : u32) -> vec3<f32>
@@ -71,7 +123,11 @@ fn tonemap(c : vec3<f32>, mode : u32) -> vec3<f32>
     }
     else if (mode == 2u)
     {
-        result = clamp((c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14), vec3<f32>(0.0), vec3<f32>(1.0));
+        result = aces_tone_map(c);
+    }
+    else if (mode == 3u)
+    {
+        result = AgXTonemap(c);
     }
     return result;
 }
@@ -110,7 +166,7 @@ fn gamutSwatches(uv : vec2<f32>) -> vec3<f32>
 
 fn channelRamps(uv : vec2<f32>, exposureMax : f32) -> vec3<f32>
 {
-    let localY = (uv.y - 0.25) / 0.25;
+    let localY = fract(uv.y * 3.0);
     let row = u32(clamp(floor(localY * 4.0), 0.0, 3.0));
     let value = uv.x * exposureMax;
 
@@ -133,7 +189,7 @@ fn channelRamps(uv : vec2<f32>, exposureMax : f32) -> vec3<f32>
     }
 
     // tonemap the ramps to give them perceptual headroom, but don't tonemap the reference-white tick.
-    c = tonemap(c, kTonemapMode);
+    // c = tonemap(c, kTonemapMode);
 
     // Reference-white marker: thin inverted tick where value crosses 1.0.
     let markerX = 1.0 / exposureMax;
@@ -182,7 +238,18 @@ fn interpolationTest(uv : vec2<f32>) -> vec3<f32>
         let t = (uv.x - 0.5) / 0.5;
         c = mix(green, blue, t);
     }
+
     return c;
+}
+
+fn srgbToDisplayP3(c : vec3<f32>) -> vec3<f32>
+{
+    let srgbToP3 = mat3x3<f32>(
+        vec3<f32>(0.8224621, 0.0331941, 0.0170827), // Column 0 (X)
+        vec3<f32>(0.1775379, 0.9668059, 0.0723973), // Column 1 (Y)
+        vec3<f32>(0.0000000, 0.0000000, 0.9105200)  // Column 2 (Z)
+    );
+    return srgbToP3 * c;
 }
 
 @fragment
@@ -190,22 +257,19 @@ fn FsMain(in : VertexOutput) -> @location(0) vec4<f32>
 {
     let uv = in.uv;
     var outColor : vec3<f32>;
-
-    if (uv.y < 0.25)
-    {
-        outColor = gamutSwatches(uv);
-    }
-    else if (uv.y < 0.50)
+    if (uv.y < kBand1Height)
     {
         outColor = channelRamps(uv, kExposureMax);
+        outColor = outColor * kExposureMax; // scale up to see the effect of tonemapping
     }
-    else if (uv.y < 0.75)
+    else if (uv.y < kBand2Height)
     {
         outColor = stepChart(uv);
     }
     else
     {
         outColor = interpolationTest(uv);
+        outColor = outColor * kExposureMax; // scale up to see the effect of tonemapping
     }
 
     // Faint separator lines at each band boundary.
@@ -214,6 +278,10 @@ fn FsMain(in : VertexOutput) -> @location(0) vec4<f32>
     {
         outColor = vec3<f32>(0.5);
     }
+
+    outColor = tonemap(outColor, kTonemapMode);
+    // convert to Display-P3 if the surface is in that color space, so we can see the gamut difference.
+    outColor = srgbToDisplayP3(outColor);
 
     if (kTransferFunctionMode == 1u)
     {
