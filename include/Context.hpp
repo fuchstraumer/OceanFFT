@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string_view>
 #include <span>
+#include <Task.hpp>
 
 struct GLFWwindow;
 
@@ -58,6 +59,10 @@ namespace velox
         Context(const ContextCreateInfo& createInfo);
         ~Context();
 
+        // use coroutines to do async work, so we can avoid asyncify
+        // we can't use coroutines in a ctor, so it has to be a separate function!
+        Task<std::expected<bool, RhiError>> InitWebGPU(const ContextCreateInfo& createInfo);
+
         ResizeStatus Resize(uint32_t width, uint32_t height);
         wgpu::TextureView AcquireNextFrame();
         void Present();
@@ -75,7 +80,9 @@ namespace velox
     private:
 
         std::expected<wgpu::Instance, RhiError> requestInstance(const ContextCreateInfo& createInfo);
+        wgpu::RequestAdapterOptions getAdapterOptions(const ContextCreateInfo& createInfo) const;
         std::expected<wgpu::Adapter, RhiError> requestAdapter(const ContextCreateInfo& createInfo);
+        wgpu::DeviceDescriptor getDeviceDescriptor(const ContextCreateInfo& createInfo) const;
         std::expected<wgpu::Device, RhiError> requestDevice(const ContextCreateInfo& createInfo);
         std::expected<GLFWwindow*, RhiError> createNativeWindow(const ContextCreateInfo& createInfo);
         std::expected<wgpu::Surface, RhiError> createSurface(const ContextCreateInfo& createInfo);
