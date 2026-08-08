@@ -106,6 +106,7 @@ set(VeloxRhi_Headers
     "${CMAKE_CURRENT_SOURCE_DIR}/include/AsyncTasks.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Context.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Future.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/Scheduler.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/ShaderUtils.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/VeloxErrors.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/utility/SlotMap.hpp")
@@ -117,6 +118,7 @@ set(VeloxRhi_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/AsyncTasks.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Context.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Future.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Scheduler.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ShaderUtils.cpp")
 
 add_executable(VeloxRhi ${VeloxRhi_SOURCES} ${VeloxRhi_Headers} ${OCEAN_FFT_GENERATED_OUTPUTS})
