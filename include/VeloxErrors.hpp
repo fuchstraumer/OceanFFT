@@ -3,8 +3,6 @@
 #define VELOX_ERRORS_HPP
 #include <expected>
 #include <type_traits>
-#include <webgpu/webgpu_cpp.h>
-
 #ifndef NDEBUG
 #include <print>
 #include <magic_enum/magic_enum.hpp>

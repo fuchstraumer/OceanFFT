@@ -14,7 +14,7 @@ struct GLFWwindow;
 namespace velox
 {
 
-struct ContextImpl;
+struct Scheduler;
 
 enum class ResizeStatus : uint8_t
 {
@@ -80,9 +80,7 @@ public:
     bool HasFeature(wgpu::FeatureName feature) const noexcept;
     GLFWwindow* GetNativeWindow() const noexcept;
 
-    /* We cast to void* when passing into here because it can spare us an include (lol) */
-    SlotMapHandle RegisterPending(void* deferred_coroutine) noexcept;
-    void MarkReady(SlotMapHandle handle) noexcept;
+    Scheduler* GetScheduler() noexcept;
 
 private:
     std::expected<wgpu::Instance, RhiError> requestInstance(const ContextCreateInfo& createInfo);
@@ -105,6 +103,7 @@ private:
     // we store the surface config to make reconfiguring not need the whole create info
     wgpu::SurfaceConfiguration surfaceConfig{};
 
+    std::unique_ptr<Scheduler> impl{ nullptr };
 };
 
 } // namespace velox
