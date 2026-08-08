@@ -3,21 +3,20 @@
 #include <iostream>
 #include <print>
 #define GLFW_INCLUDE_NONE
+#include "magic_enum/magic_enum.hpp"
 #include <GLFW/glfw3.h>
-#include <webgpu/webgpu_glfw.h>
-#include <unordered_map>
 #include <algorithm>
 #include <coroutine>
 #include <expected>
-#include "magic_enum/magic_enum.hpp"
-
+#include <unordered_map>
+#include <webgpu/webgpu_glfw.h>
 
 #if !defined(__EMSCRIPTEN__) && defined(_WIN32)
 #undef APIENTRY
 #define WIN32_LEAN_AND_MEAN
 #include <dawn/native/DawnNative.h>
 #include <windows.h>
-// :( 
+// :(
 std::string GetSystemDirectory()
 {
     char buffer[MAX_PATH];
@@ -54,20 +53,27 @@ struct AdapterAwaitable
 
     void await_suspend(std::coroutine_handle<> handle)
     {
-        instance.RequestAdapter(&options, wgpu::CallbackMode::AllowSpontaneous,
-        [this, handle](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message)
-        {
-            if (status == wgpu::RequestAdapterStatus::Success)
+        instance.RequestAdapter(
+            &options,
+            wgpu::CallbackMode::AllowSpontaneous,
+            [this, handle](
+                wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message)
             {
-                result = adapter;
-            }
-            else
-            {
-                std::println(stderr, "[velox][context] RequestAdapter failed with status {} and message: {}", magic_enum::enum_name(status), std::string_view(message.data, message.length));
-                result = std::unexpected(velox::RhiError::AdapterRequestFailed);
-            }
-            handle.resume();
-        });
+                if (status == wgpu::RequestAdapterStatus::Success)
+                {
+                    result = adapter;
+                }
+                else
+                {
+                    std::println(
+                        stderr,
+                        "[velox][context] RequestAdapter failed with status {} and message: {}",
+                        magic_enum::enum_name(status),
+                        std::string_view(message.data, message.length));
+                    result = std::unexpected(velox::RhiError::AdapterRequestFailed);
+                }
+                handle.resume();
+            });
     }
 
     std::expected<wgpu::Adapter, velox::RhiError> await_resume() noexcept
@@ -89,20 +95,27 @@ struct DeviceAwaitable
 
     void await_suspend(std::coroutine_handle<> handle)
     {
-        adapter.RequestDevice(&descriptor, wgpu::CallbackMode::AllowSpontaneous,
-        [this, handle](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message)
-        {
-            if (status == wgpu::RequestDeviceStatus::Success)
+        adapter.RequestDevice(
+            &descriptor,
+            wgpu::CallbackMode::AllowSpontaneous,
+            [this, handle](
+                wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message)
             {
-                result = device;
-            }
-            else
-            {
-                std::println(stderr, "[velox][context] RequestDevice failed with status {} and message: {}", magic_enum::enum_name(status), std::string_view(message.data, message.length));
-                result = std::unexpected(velox::RhiError::DeviceRequestFailed);
-            }
-            handle.resume();
-        });
+                if (status == wgpu::RequestDeviceStatus::Success)
+                {
+                    result = device;
+                }
+                else
+                {
+                    std::println(
+                        stderr,
+                        "[velox][context] RequestDevice failed with status {} and message: {}",
+                        magic_enum::enum_name(status),
+                        std::string_view(message.data, message.length));
+                    result = std::unexpected(velox::RhiError::DeviceRequestFailed);
+                }
+                handle.resume();
+            });
     }
 
     std::expected<wgpu::Device, velox::RhiError> await_resume() noexcept
@@ -119,34 +132,35 @@ struct DeviceAwaitable
     {
         return result.error();
     }
-
 };
 
 namespace
 {
-    // todo: we should sink these somewhere more portable, and which could actually give us debug info in live clients maybe?
-    [[noreturn]] void LogUncapturedError(
-        [[maybe_unused]] const wgpu::Device&,
-        wgpu::ErrorType type,
-        wgpu::StringView message)
-    {
-        std::println(stderr,
-                     "[wgpu] Uncaptured error, exiting | Error Type \"{}\" | Message: {}",
-                     magic_enum::enum_name(type), std::string_view(message.data, message.length));
-        std::exit(1);
-    }
-
-    void LogDeviceLost(
-        [[maybe_unused]] const wgpu::Device&,
-        wgpu::DeviceLostReason reason,
-        wgpu::StringView message)
-    {
-        // note that this is also called for routine destruction, so messages from here don't always mean something went wrong
-        std::println(stderr,
-                     "[wgpu] Device lost | Reason: \"{}\" | Message: {}",
-                     magic_enum::enum_name(reason), std::string_view(message.data, message.length));
-    }
+// todo: we should sink these somewhere more portable, and which could actually give us debug info
+// in live clients maybe?
+[[noreturn]] void LogUncapturedError([[maybe_unused]] const wgpu::Device&,
+                                     wgpu::ErrorType type,
+                                     wgpu::StringView message)
+{
+    std::println(stderr,
+                 "[wgpu] Uncaptured error, exiting | Error Type \"{}\" | Message: {}",
+                 magic_enum::enum_name(type),
+                 std::string_view(message.data, message.length));
+    std::exit(1);
 }
+
+void LogDeviceLost([[maybe_unused]] const wgpu::Device&,
+                   wgpu::DeviceLostReason reason,
+                   wgpu::StringView message)
+{
+    // note that this is also called for routine destruction, so messages from here don't always
+    // mean something went wrong
+    std::println(stderr,
+                 "[wgpu] Device lost | Reason: \"{}\" | Message: {}",
+                 magic_enum::enum_name(reason),
+                 std::string_view(message.data, message.length));
+}
+} // namespace
 
 namespace velox
 {
@@ -199,7 +213,8 @@ Task<std::expected<bool, RhiError>> Context::InitWebGPU(const ContextCreateInfo&
         std::println(stderr, "[velox][context] Device enabled features:{}", enabledFeatureNames);
         surface = ValidOrExit(createSurface(createInfo));
         configureSurface(createInfo);
-        // in un-async mode, we can just co_return true to immediately finish the coroutine, as all work is done synchronously
+        // in un-async mode, we can just co_return true to immediately finish the coroutine, as all
+        // work is done synchronously
         co_return true;
     }
 }
@@ -298,10 +313,13 @@ GLFWwindow* Context::GetNativeWindow() const noexcept
 }
 #endif
 
-std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCreateInfo& createInfo)
+std::expected<wgpu::Instance, RhiError>
+Context::requestInstance(const ContextCreateInfo& createInfo)
 {
     wgpu::InstanceDescriptor instanceDesc{};
-    const wgpu::InstanceFeatureName requiredFeatures[] = { wgpu::InstanceFeatureName::TimedWaitAny };
+    const wgpu::InstanceFeatureName requiredFeatures[] = {
+        wgpu::InstanceFeatureName::TimedWaitAny
+    };
     instanceDesc.requiredFeatureCount = std::size(requiredFeatures);
     instanceDesc.requiredFeatures = requiredFeatures;
 #if !defined(__EMSCRIPTEN__) && defined(_WIN32)
@@ -343,8 +361,11 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
 {
     wgpu::RequestAdapterOptions options = getAdapterOptions(createInfo);
     wgpu::Adapter result_adapter;
-    wgpu::Future future = instance.RequestAdapter(&options, wgpu::CallbackMode::WaitAnyOnly,
-        [&result_adapter](wgpu::RequestAdapterStatus status, wgpu::Adapter result, wgpu::StringView message)
+    wgpu::Future future = instance.RequestAdapter(
+        &options,
+        wgpu::CallbackMode::WaitAnyOnly,
+        [&result_adapter](
+            wgpu::RequestAdapterStatus status, wgpu::Adapter result, wgpu::StringView message)
         {
             if (status == wgpu::RequestAdapterStatus::Success)
             {
@@ -353,12 +374,14 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
             else
             {
                 result_adapter = wgpu::Adapter{}; // ensure it's empty
-                std::println(stderr, "[velox][context] RequestAdapter failed: {}", std::string_view(message.data, message.length));
+                std::println(stderr,
+                             "[velox][context] RequestAdapter failed: {}",
+                             std::string_view(message.data, message.length));
             }
         });
 
     instance.WaitAny(future, UINT64_MAX);
-    
+
     if (!result_adapter)
     {
         return std::unexpected(RhiError::AdapterRequestFailed);
@@ -390,8 +413,11 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
 {
     wgpu::DeviceDescriptor deviceDesc = getDeviceDescriptor(createInfo);
     wgpu::Device result_device;
-    wgpu::Future future = adapter.RequestDevice(&deviceDesc, wgpu::CallbackMode::WaitAnyOnly,
-        [&result_device](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message)
+    wgpu::Future future = adapter.RequestDevice(
+        &deviceDesc,
+        wgpu::CallbackMode::WaitAnyOnly,
+        [&result_device](
+            wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message)
         {
             if (status == wgpu::RequestDeviceStatus::Success)
             {
@@ -400,7 +426,9 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
             else
             {
                 result_device = wgpu::Device{}; // ensure it's empty
-                std::println(stderr, "[velox][context] RequestDevice failed: {}", std::string_view(message.data, message.length));
+                std::println(stderr,
+                             "[velox][context] RequestDevice failed: {}",
+                             std::string_view(message.data, message.length));
             }
         });
 
@@ -414,12 +442,14 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
     return result_device;
 }
 
-std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCreateInfo& createInfo)
+std::expected<GLFWwindow*, RhiError>
+Context::createNativeWindow(const ContextCreateInfo& createInfo)
 {
-    // todo: We have a bunch of nice example code for how to set backbuffer bit depth and color stuff in DiamondDogs,
-    // along with configuring other parameters for the window. We should do some of that here, especially color depth
-    // (because it's interesting and can be fun to play with!)
-   
+    // todo: We have a bunch of nice example code for how to set backbuffer bit depth and color
+    // stuff in DiamondDogs, along with configuring other parameters for the window. We should do
+    // some of that here, especially color depth (because it's interesting and can be fun to play
+    // with!)
+
     if (!glfwInit())
     {
         return std::unexpected(RhiError::GLFWInitFailed);
@@ -428,7 +458,11 @@ std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCr
     // works like Vulkan - no context, just platform window
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    GLFWwindow* window = glfwCreateWindow(createInfo.InitialWidth, createInfo.InitialHeight, createInfo.ApplicationName.data(), nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(createInfo.InitialWidth,
+                                          createInfo.InitialHeight,
+                                          createInfo.ApplicationName.data(),
+                                          nullptr,
+                                          nullptr);
     if (!window)
     {
         return std::unexpected(RhiError::GLFWWindowCreationFailed);
@@ -440,10 +474,12 @@ std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCr
     return window;
 }
 
-std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& /*createInfo*/)
+std::expected<wgpu::Surface, RhiError>
+Context::createSurface(const ContextCreateInfo& /*createInfo*/)
 {
-    // todo: this GLFW shim sets the descriptor based on GLFW hints, but for things like colorspaces this won't pass through
-    // at least it didn't in DiamondDogs, not without a good bit of extra work
+    // todo: this GLFW shim sets the descriptor based on GLFW hints, but for things like colorspaces
+    // this won't pass through at least it didn't in DiamondDogs, not without a good bit of extra
+    // work
     surface = wgpu::glfw::CreateSurfaceForWindow(instance, nativeWindow);
     if (!surface)
     {
@@ -457,11 +493,10 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     wgpu::SurfaceCapabilities capabilities{};
     surface.GetCapabilities(adapter, &capabilities);
 
-    auto format_match =
-        [&createInfo](wgpu::TextureFormat format)
-        { 
-            return format == createInfo.PreferredSurfaceFormat;
-        };
+    auto format_match = [&createInfo](wgpu::TextureFormat format)
+    {
+        return format == createInfo.PreferredSurfaceFormat;
+    };
 
     // print suported formats
     std::string supportedFormats;
@@ -471,20 +506,23 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     }
     std::println(stderr, "[velox][context] Surface supported formats:{}", supportedFormats);
 
-    auto format_iter = std::find_if(capabilities.formats,
-                                    capabilities.formats + capabilities.formatCount,
-                                    format_match);
+    auto format_iter = std::find_if(
+        capabilities.formats, capabilities.formats + capabilities.formatCount, format_match);
     wgpu::TextureFormat surfaceFormat{};
     if (format_iter != capabilities.formats + capabilities.formatCount)
     {
         surfaceFormat = *format_iter;
-        std::println(stderr, "[velox][context] Using preferred surface format {}", magic_enum::enum_name(surfaceFormat));
+        std::println(stderr,
+                     "[velox][context] Using preferred surface format {}",
+                     magic_enum::enum_name(surfaceFormat));
     }
     else
     {
         // if we can't find our preferred format, just pick the first one the surface supports
         surfaceFormat = capabilities.formats[0];
-        std::println(stderr, "[velox][context] Preferred surface format {} not supported by surface, using {} instead",
+        std::println(stderr,
+                     "[velox][context] Preferred surface format {} not supported by surface, using "
+                     "{} instead",
                      magic_enum::enum_name(createInfo.PreferredSurfaceFormat),
                      magic_enum::enum_name(surfaceFormat));
     }
