@@ -1,0 +1,47 @@
+---
+# The Checks list dictates what rules are active. 
+# It starts by disabling everything (-*), then selectively enabling groups.
+Checks: >
+    -*,
+    bugprone-*,
+    performance-*,
+    modernize-*,
+    cppcoreguidelines-*,
+    readability-identifier-naming
+    misc-include-cleaner
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '^(src|include)/.*'
+AnalyzeTemporaryDtors: false
+
+CheckOptions:
+    misc-include-cleaner.IgnoreHeaders: 'third_party/.*'
+    misc-include-cleaner.UnusedIncludes: true
+
+    # --- Types (PascalCase) ---
+    readability-identifier-naming.ClassCase: PascalCase
+    readability-identifier-naming.StructCase: PascalCase
+    readability-identifier-naming.EnumCase: PascalCase
+    readability-identifier-naming.UnionCase: PascalCase
+    readability-identifier-naming.TypeAliasCase: PascalCase
+    readability-identifier-naming.TypedefCase: PascalCase
+
+    # --- Variables and Members ---
+    # Public / Local
+    readability-identifier-naming.VariableCase: PascalCase
+    readability-identifier-naming.PublicMemberCase: PascalCase
+    readability-identifier-naming.GlobalVariableCase: PascalCase
+    # Private / Protected
+    readability-identifier-naming.PrivateMemberCase: camelCase
+    readability-identifier-naming.ProtectedMemberCase: camelCase
+
+    # --- Functions and Methods ---
+    # Public / Default
+    readability-identifier-naming.FunctionCase: PascalCase
+    readability-identifier-naming.MethodCase: PascalCase
+    # Private / Protected
+    readability-identifier-naming.PrivateMethodCase: camelCase
+    readability-identifier-naming.ProtectedMethodCase: camelCase
+
+    # --- Parameters (snake_case) ---
+    readability-identifier-naming.ParameterCase: snake_case
