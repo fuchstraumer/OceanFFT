@@ -2,8 +2,7 @@
 #ifndef VELOX_RHI_ASYNC_TASKS_HPP
 #define VELOX_RHI_ASYNC_TASKS_HPP
 #include "Context.hpp"
-#include <span>
-#include <webgpu/webgpu_cpp.h>
+#include <coroutine>
 
 #ifndef NDEBUG
 #include <magic_enum/magic_enum.hpp>
@@ -101,13 +100,13 @@ private:
     Context* context{ nullptr };
 
 public:
-    constexpr BufferMapAwaitable(wgpu::Buffer buffer,
-                                 size_t size,
-                                 size_t offset = 0u,
+    constexpr BufferMapAwaitable(wgpu::Buffer _buffer,
+                                 size_t _size,
+                                 size_t _offset = 0u,
                                  Context* _context = nullptr) noexcept
-        : buffer(buffer),
-          size(size),
-          offset(offset),
+        : buffer{ _buffer },
+          size{ _size },
+          offset{ _offset },
           context{ _context }
     {
     }
@@ -126,7 +125,7 @@ public:
         SlotMapHandle slot;
         if (context)
         {
-            slot = context->RegisterPending(handle);
+            slot = context->RegisterPending(handle.address());
         }
 
         buffer.MapAsync(Mode,
@@ -192,17 +191,23 @@ public:
     template<typename T>
     std::span<T> GetDataAs() noexcept
     {
-        static_assert(std::is_standard_layout_v<T>,
+        assert(reinterpret_cast<std::uintptr_t>(mappedPtr) % alignof(T) == 0);
+        static_assert(std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>,
                       "T must be standard layout to interpret mapped data as span of T");
-        return std::span<T>(static_cast<std::add_pointer_t<T>>(data), size / sizeof(T));
+        const size_t numElements = size / sizeof(T);
+        T* typeArray = std::start_lifetime_as_array<T>(mappedPtr, numElements);
+        return std::span<T>(typeArray, typeArray + numElements);
     }
 
     template<typename T>
     std::span<const T> GetDataAs() const noexcept
     {
-        static_assert(std::is_standard_layout_v<T>,
-                      "T must be standard layout to interpret mapped data as span of T");
-        return std::span<const T>(static_cast<std::add_pointer_t<const T>>(data), size / sizeof(T));
+        assert(reinterpret_cast<std::uintptr_t>(mappedPtr) % alignof(T) == 0);
+        static_assert(std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>,
+                      "T must be standard layout and trivially copyable to interpret mapped data as span of T");
+        const size_t numElements = size / sizeof(T);
+        const T* typeArray = std::start_lifetime_as_array<T>(mappedPtr, numElements);
+        return std::span<const T>(typeArray, typeArray + numElements);
     }
 
     MappedPointerType<Mode> GetDataPtr() noexcept
@@ -264,7 +269,11 @@ public:
 
     void await_suspend(std::coroutine_handle<> handle)
     {
-        SlotMapHandle slot = context->RegisterPending(handle);
+        SlotMapHandle slot;
+        if (context)
+        {
+            slot = context->RegisterPending(handle.address());
+        }
 
         if constexpr (std::is_same_v<Pipeline, wgpu::RenderPipeline>)
         {

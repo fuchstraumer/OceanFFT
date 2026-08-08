@@ -6,14 +6,15 @@
 #include "VeloxErrors.hpp"
 #include <cstdint>
 #include <span>
-#include <coroutine>
-#include <expected>
+#include <memory>
 #include <webgpu/webgpu_cpp.h>
 
 struct GLFWwindow;
 
 namespace velox
 {
+
+struct ContextImpl;
 
 enum class ResizeStatus : uint8_t
 {
@@ -79,7 +80,8 @@ public:
     bool HasFeature(wgpu::FeatureName feature) const noexcept;
     GLFWwindow* GetNativeWindow() const noexcept;
 
-    SlotMapHandle RegisterPending(std::coroutine_handle<> deferred_coroutine) noexcept;
+    /* We cast to void* when passing into here because it can spare us an include (lol) */
+    SlotMapHandle RegisterPending(void* deferred_coroutine) noexcept;
     void MarkReady(SlotMapHandle handle) noexcept;
 
 private:
