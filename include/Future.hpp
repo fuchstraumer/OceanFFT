@@ -6,11 +6,13 @@
 namespace velox
 {
 
+struct Scheduler;
+
 /* Maybe need a beter name, but this is the type returned to callers of our async functions. */
 template<typename T>
 class Future
 {
-    Context* context;
+    Scheduler* scheduler;
     SlotMapHandle handle;
 
 public:
@@ -19,24 +21,24 @@ public:
 
 using RenderPipelineFuture = Future<Result<wgpu::RenderPipeline>>;
 using ComputePipelineFuture = Future<Result<wgpu::ComputePipeline>>;
-using MapReadFuture = Future<MapResultType<wgpu::MapMode::Read>>;
-using MapWriteFuture = Future<MapResultType<wgpu::MapMode::Write>>;
+using MapReadFuture = Future<Result<const void*>>;
+using MapWriteFuture = Future<Result<void*>>;
 
-RenderPipelineFuture RequestRenderPipeline(Context* _ctxt,
+RenderPipelineFuture RequestRenderPipeline(Scheduler* _ctxt,
                                            wgpu::Device _device,
                                            wgpu::RenderPipelineDescriptor _descr);
 
-ComputePipelineFuture RequestComputePipeline(Context* _ctxt,
+ComputePipelineFuture RequestComputePipeline(Scheduler* _ctxt,
                                              wgpu::Device _device,
                                              wgpu::ComputePipelineDescriptor _descr);
 
-MapReadFuture RequestMapBufferReadAsync(Context* _ctxt,
+MapReadFuture RequestMapBufferReadAsync(Scheduler* _ctxt,
                                         wgpu::Device _device,
                                         wgpu::Buffer _buffer,
                                         size_t size,
                                         size_t offset = 0u);
 
-MapWriteFuture RequestMapBufferWritesync(Context* _ctxt,
+MapWriteFuture RequestMapBufferWritesync(Scheduler* _ctxt,
                                          wgpu::Device _device,
                                          wgpu::Buffer _buffer,
                                          size_t size,
