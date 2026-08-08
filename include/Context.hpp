@@ -2,17 +2,19 @@
 
 #ifndef VELOX_WEB_GPU_CONTEXT_HPP
 #define VELOX_WEB_GPU_CONTEXT_HPP
+#include "utility/SlotMap.hpp"
 #include "VeloxErrors.hpp"
-#include <Task.hpp>
 #include <cstdint>
 #include <span>
-#include <string_view>
+#include <coroutine>
+#include <expected>
 #include <webgpu/webgpu_cpp.h>
 
 struct GLFWwindow;
 
 namespace velox
 {
+
 enum class ResizeStatus : uint8_t
 {
     Unchanged = 0,
@@ -61,7 +63,7 @@ public:
 
     // use coroutines to do async work, so we can avoid asyncify
     // we can't use coroutines in a ctor, so it has to be a separate function!
-    Task<std::expected<bool, RhiError>> InitWebGPU(const ContextCreateInfo& createInfo);
+    //Task<std::expected<bool, RhiError>> InitWebGPU(const ContextCreateInfo& createInfo);
 
     ResizeStatus Resize(uint32_t width, uint32_t height);
     wgpu::TextureView AcquireNextFrame();
@@ -76,6 +78,9 @@ public:
 
     bool HasFeature(wgpu::FeatureName feature) const noexcept;
     GLFWwindow* GetNativeWindow() const noexcept;
+
+    SlotMapHandle RegisterPending(std::coroutine_handle<> deferred_coroutine) noexcept;
+    void MarkReady(SlotMapHandle handle) noexcept;
 
 private:
     std::expected<wgpu::Instance, RhiError> requestInstance(const ContextCreateInfo& createInfo);
@@ -97,6 +102,7 @@ private:
     wgpu::Surface surface;
     // we store the surface config to make reconfiguring not need the whole create info
     wgpu::SurfaceConfiguration surfaceConfig{};
+
 };
 
 } // namespace velox

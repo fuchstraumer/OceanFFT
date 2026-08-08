@@ -1,4 +1,5 @@
 #include "Context.hpp"
+#include "AsyncTasks.hpp"
 #include <format>
 #include <iostream>
 #include <print>
@@ -7,7 +8,6 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <coroutine>
-#include <expected>
 #include <unordered_map>
 #include <webgpu/webgpu_glfw.h>
 
@@ -36,103 +36,10 @@ std::string GetSystemDirectory()
 }
 #endif
 
-// no more sledgehammer of asyncify, we can use coroutines!
+
+
+// true = asyncify IS on, false = it is not, we're doing the async ourselves
 constexpr static bool k_Asyncify = false;
-
-struct AdapterAwaitable
-{
-    wgpu::Instance instance;
-    wgpu::RequestAdapterOptions options;
-    std::expected<wgpu::Adapter, velox::RhiError> result;
-
-    // always suspend
-    constexpr bool await_ready() const noexcept
-    {
-        return false;
-    }
-
-    void await_suspend(std::coroutine_handle<> handle)
-    {
-        instance.RequestAdapter(
-            &options,
-            wgpu::CallbackMode::AllowSpontaneous,
-            [this, handle](
-                wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message)
-            {
-                if (status == wgpu::RequestAdapterStatus::Success)
-                {
-                    result = adapter;
-                }
-                else
-                {
-                    std::println(
-                        stderr,
-                        "[velox][context] RequestAdapter failed with status {} and message: {}",
-                        magic_enum::enum_name(status),
-                        std::string_view(message.data, message.length));
-                    result = std::unexpected(velox::RhiError::AdapterRequestFailed);
-                }
-                handle.resume();
-            });
-    }
-
-    std::expected<wgpu::Adapter, velox::RhiError> await_resume() noexcept
-    {
-        return std::move(result);
-    }
-};
-
-struct DeviceAwaitable
-{
-    wgpu::Adapter adapter;
-    wgpu::DeviceDescriptor descriptor;
-    std::expected<wgpu::Device, velox::RhiError> result;
-
-    constexpr bool await_ready() const noexcept
-    {
-        return false;
-    }
-
-    void await_suspend(std::coroutine_handle<> handle)
-    {
-        adapter.RequestDevice(
-            &descriptor,
-            wgpu::CallbackMode::AllowSpontaneous,
-            [this, handle](
-                wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message)
-            {
-                if (status == wgpu::RequestDeviceStatus::Success)
-                {
-                    result = device;
-                }
-                else
-                {
-                    std::println(
-                        stderr,
-                        "[velox][context] RequestDevice failed with status {} and message: {}",
-                        magic_enum::enum_name(status),
-                        std::string_view(message.data, message.length));
-                    result = std::unexpected(velox::RhiError::DeviceRequestFailed);
-                }
-                handle.resume();
-            });
-    }
-
-    std::expected<wgpu::Device, velox::RhiError> await_resume() noexcept
-    {
-        return std::move(result);
-    }
-
-    constexpr explicit operator bool() const noexcept
-    {
-        return result.has_value();
-    }
-
-    velox::RhiError error() const noexcept
-    {
-        return result.error();
-    }
-};
 
 namespace
 {
@@ -172,6 +79,7 @@ Context::Context(const ContextCreateInfo& createInfo)
     nativeWindow = ValidOrExit(createNativeWindow(createInfo));
 }
 
+/*
 Task<std::expected<bool, RhiError>> Context::InitWebGPU(const ContextCreateInfo& createInfo)
 {
     if (k_Asyncify)
@@ -218,6 +126,7 @@ Task<std::expected<bool, RhiError>> Context::InitWebGPU(const ContextCreateInfo&
         co_return true;
     }
 }
+*/
 
 Context::~Context()
 {
@@ -313,13 +222,10 @@ GLFWwindow* Context::GetNativeWindow() const noexcept
 }
 #endif
 
-std::expected<wgpu::Instance, RhiError>
-Context::requestInstance(const ContextCreateInfo& createInfo)
+std::expected<wgpu::Instance, RhiError> Context::requestInstance(const ContextCreateInfo& createInfo)
 {
     wgpu::InstanceDescriptor instanceDesc{};
-    const wgpu::InstanceFeatureName requiredFeatures[] = {
-        wgpu::InstanceFeatureName::TimedWaitAny
-    };
+    const wgpu::InstanceFeatureName requiredFeatures[] = { wgpu::InstanceFeatureName::TimedWaitAny };
     instanceDesc.requiredFeatureCount = std::size(requiredFeatures);
     instanceDesc.requiredFeatures = requiredFeatures;
 #if !defined(__EMSCRIPTEN__) && defined(_WIN32)
@@ -364,8 +270,7 @@ std::expected<wgpu::Adapter, RhiError> Context::requestAdapter(const ContextCrea
     wgpu::Future future = instance.RequestAdapter(
         &options,
         wgpu::CallbackMode::WaitAnyOnly,
-        [&result_adapter](
-            wgpu::RequestAdapterStatus status, wgpu::Adapter result, wgpu::StringView message)
+        [&result_adapter](wgpu::RequestAdapterStatus status, wgpu::Adapter result, wgpu::StringView message)
         {
             if (status == wgpu::RequestAdapterStatus::Success)
             {
@@ -416,8 +321,7 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
     wgpu::Future future = adapter.RequestDevice(
         &deviceDesc,
         wgpu::CallbackMode::WaitAnyOnly,
-        [&result_device](
-            wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message)
+        [&result_device](wgpu::RequestDeviceStatus status, wgpu::Device result, wgpu::StringView message)
         {
             if (status == wgpu::RequestDeviceStatus::Success)
             {
@@ -442,8 +346,7 @@ std::expected<wgpu::Device, RhiError> Context::requestDevice(const ContextCreate
     return result_device;
 }
 
-std::expected<GLFWwindow*, RhiError>
-Context::createNativeWindow(const ContextCreateInfo& createInfo)
+std::expected<GLFWwindow*, RhiError> Context::createNativeWindow(const ContextCreateInfo& createInfo)
 {
     // todo: We have a bunch of nice example code for how to set backbuffer bit depth and color
     // stuff in DiamondDogs, along with configuring other parameters for the window. We should do
@@ -474,8 +377,7 @@ Context::createNativeWindow(const ContextCreateInfo& createInfo)
     return window;
 }
 
-std::expected<wgpu::Surface, RhiError>
-Context::createSurface(const ContextCreateInfo& /*createInfo*/)
+std::expected<wgpu::Surface, RhiError> Context::createSurface(const ContextCreateInfo& /*createInfo*/)
 {
     // todo: this GLFW shim sets the descriptor based on GLFW hints, but for things like colorspaces
     // this won't pass through at least it didn't in DiamondDogs, not without a good bit of extra
@@ -506,8 +408,8 @@ void Context::configureSurface(const ContextCreateInfo& createInfo)
     }
     std::println(stderr, "[velox][context] Surface supported formats:{}", supportedFormats);
 
-    auto format_iter = std::find_if(
-        capabilities.formats, capabilities.formats + capabilities.formatCount, format_match);
+    auto format_iter =
+        std::find_if(capabilities.formats, capabilities.formats + capabilities.formatCount, format_match);
     wgpu::TextureFormat surfaceFormat{};
     if (format_iter != capabilities.formats + capabilities.formatCount)
     {
