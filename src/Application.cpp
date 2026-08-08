@@ -17,7 +17,7 @@ namespace
 namespace velox
 {
 
-    InitStatus Application::OnInit(Context& context)
+    InitStatus Application::OnInstanceInit(Context& context)
     {
         return InitStatus::Success;
     }

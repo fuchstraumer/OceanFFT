@@ -32,9 +32,9 @@ namespace velox
     public:
         virtual ~Application();
 
-        // Called once, after the Context's device/queue/surface are ready.
-        // Create pipelines, buffers, load shaders here.
-        virtual InitStatus OnInit(Context& context);
+        // Call after context initializes instance: this will then allow adapter and device
+        // init to be passed off to be executed async, as we prefer
+        virtual InitStatus OnInstanceInit(Context& context);
 
         // Called whenever the surface needs to be (re)configured, including
         // once up front with the initial window/canvas size.
@@ -53,11 +53,7 @@ namespace velox
     };
 
     // Anything after we call RunApplication() in main will not be called on web, for now
-    #ifdef __EMSCRIPTEN__
     void ApplicationMainLoop(Context& context, Application& app);
-    #else
-    void ApplicationMainLoop(Context& context, Application& app, GLFWwindow* window);
-    #endif
 
 } // namespace velox
 
